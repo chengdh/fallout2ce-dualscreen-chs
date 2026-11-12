@@ -1,0 +1,9 @@
+<resources>
+
+    <!-- The import screen: full screen, the mobile UI's dark green. -->
+    <style name="AppTheme" parent="android:Theme.Material.NoActionBar.Fullscreen">
+        <item name="android:windowBackground">@color/import_background</item>
+        <item name="android:colorAccent">@color/import_accent</item>
+    </style>
+
+</resources>

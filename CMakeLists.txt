@@ -1,0 +1,1006 @@
+cmake_minimum_required(VERSION 3.18)
+
+set(CMAKE_POLICY_DEFAULT_CMP0077 NEW)
+
+set(EXECUTABLE_NAME fallout2-ce)
+
+if(APPLE)
+    if(IOS)
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "12" CACHE STRING "")
+        set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "")
+    else()
+        set(CMAKE_OSX_DEPLOYMENT_TARGET "10.13" CACHE STRING "")
+        set(CMAKE_OSX_ARCHITECTURES "x86_64;arm64" CACHE STRING "")
+    endif()
+endif()
+
+project(${EXECUTABLE_NAME})
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED YES)
+set(CMAKE_CXX_EXTENSIONS NO)
+
+if(MSVC)
+    add_compile_options($<$<COMPILE_LANGUAGE:CXX>:/EHsc>)
+endif()
+
+# CE: Source paths in the binaries (`__FILE__` in asserts, debug info)
+# relative to the source and build folders, not the builder's own paths.
+if(CMAKE_C_COMPILER_ID MATCHES "Clang|GNU")
+    add_compile_options(
+        "-ffile-prefix-map=${CMAKE_SOURCE_DIR}/="
+        "-ffile-prefix-map=${CMAKE_BINARY_DIR}/=")
+endif()
+
+option(FALLOUT_VENDORED "Use vendored third-party libraries" ON)
+option(FALLOUT_AUDIO_OGG "Enable OGG decoding with stb_vorbis when available" ON)
+# The touch recorder and the game journal always on in the touch-only build
+# (the test builds); off, the config's `[debug] touch_log` / `action_log`
+# decide (the release).
+option(FALLOUT_DIAGNOSTICS "Touch-only build: touch recorder and game journal always on" ON)
+
+set(FALLOUT_STB_VORBIS_DIR "" CACHE PATH "Directory containing stb_vorbis.c")
+
+if(ANDROID)
+    add_library(${EXECUTABLE_NAME} SHARED)
+    # The touch-only build (src/touch.h) leaves the game's windows the mobile
+    # UI replaced unreferenced; drop them (the NDK compiles every function
+    # into its own section). Only `SDL_main` (declared exported by SDL) is
+    # called from outside, so nothing else is exported to keep them alive.
+    set_target_properties(${EXECUTABLE_NAME} PROPERTIES
+        C_VISIBILITY_PRESET hidden
+        CXX_VISIBILITY_PRESET hidden
+        VISIBILITY_INLINES_HIDDEN ON)
+    target_link_options(${EXECUTABLE_NAME} PRIVATE "-Wl,--gc-sections")
+else()
+    add_executable(${EXECUTABLE_NAME} WIN32 MACOSX_BUNDLE)
+endif()
+
+# Git Info
+include("cmake/gitver.cmake")
+
+# Shared engine sources — used by both game and mapper targets.
+# Excludes main.cc/main.h (game-only entry logic).
+set(FALLOUT_ENGINE_SOURCES
+    "src/mod_profiles_mount.cc"
+    "src/actions.cc"
+    "src/actions.h"
+    "src/animation_defs.h"
+    "src/animation.cc"
+    "src/animation.h"
+    "src/art_defs.h"
+    "src/art.cc"
+    "src/art.h"
+    "src/audio.cc"
+    "src/audio.h"
+    "src/audio_channels.cc"
+    "src/audio_channels.h"
+    "src/automap.cc"
+    "src/automap.h"
+    "src/autorun.cc"
+    "src/autorun.h"
+    "src/cache.cc"
+    "src/cache.h"
+    "src/ce_save_game.cc"
+    "src/ce_save_game.h"
+    "src/character_editor.cc"
+    "src/character_editor.h"
+    "src/character_selector.cc"
+    "src/character_selector.h"
+    "src/color.cc"
+    "src/color.h"
+    "src/combat_ai_defs.h"
+    "src/combat_ai.cc"
+    "src/combat_ai.h"
+    "src/combat_defs.h"
+    "src/combat.cc"
+    "src/combat.h"
+    "src/config.cc"
+    "src/config.h"
+    "src/content_config.cc"
+    "src/content_config.h"
+    "src/credits.cc"
+    "src/credits.h"
+    "src/critter.cc"
+    "src/critter.h"
+    "src/cycle.cc"
+    "src/cycle.h"
+    "src/datafile.cc"
+    "src/datafile.h"
+    "src/db.cc"
+    "src/db.h"
+    "src/dbox.cc"
+    "src/dbox.h"
+    "src/debug.cc"
+    "src/debug.h"
+    "src/dfile.cc"
+    "src/dfile.h"
+    "src/dialog.cc"
+    "src/dialog.h"
+    "src/dictionary.cc"
+    "src/dictionary.h"
+    "src/dinput.cc"
+    "src/dinput.h"
+    "src/display_monitor.cc"
+    "src/display_monitor.h"
+    "src/draw.cc"
+    "src/draw.h"
+    "src/elevator.cc"
+    "src/elevator.h"
+    "src/endgame.cc"
+    "src/endgame.h"
+    "src/export.cc"
+    "src/export.h"
+    "src/file_find.cc"
+    "src/file_find.h"
+    "src/file_utils.cc"
+    "src/file_utils.h"
+    "src/font_manager.cc"
+    "src/font_manager.h"
+    "src/game_config.cc"
+    "src/game_config.h"
+    "src/game_config_migration.cc"
+    "src/game_config_migration.h"
+    "src/game_dialog.cc"
+    "src/game_dialog.h"
+    "src/game_memory.cc"
+    "src/game_memory.h"
+    "src/game_mouse.cc"
+    "src/game_mouse.h"
+    "src/game_movie.cc"
+    "src/game_movie.h"
+    "src/game_sound.cc"
+    "src/game_sound.h"
+    "src/game_vars.h"
+    "src/game.cc"
+    "src/game.h"
+    "src/game_commands.cc"
+    "src/game_commands.h"
+    "src/geometry.cc"
+    "src/geometry.h"
+    "src/graph_lib.cc"
+    "src/graph_lib.h"
+    "src/heap.cc"
+    "src/heap.h"
+    "src/input.cc"
+    "src/input.h"
+    "src/interface.cc"
+    "src/interface.h"
+    "src/interpreter_extra.cc"
+    "src/interpreter_extra.h"
+    "src/interpreter_lib.cc"
+    "src/interpreter_lib.h"
+    "src/interpreter.cc"
+    "src/interpreter.h"
+    "src/inventory.cc"
+    "src/inventory.h"
+    "src/item.cc"
+    "src/item.h"
+    "src/kb.cc"
+    "src/kb.h"
+    "src/light.cc"
+    "src/light.h"
+    "src/lips.cc"
+    "src/lips.h"
+    "src/loadsave.cc"
+    "src/mod_list.cc"
+    "src/mod_profiles.cc"
+    "src/save_catalog.cc"
+    "src/save_storage.cc"
+    "src/save_storage.h"
+    "src/save_catalog.h"
+    "src/save_compatibility.cc"
+    "src/save_compatibility.h"
+    "src/save_composition.cc"
+    "src/save_composition.h"
+    "src/save_records.cc"
+    "src/save_records.h"
+    "src/loadsave.h"
+    "src/mainmenu.cc"
+    "src/mainmenu.h"
+    "src/map_defs.h"
+    "src/map.cc"
+    "src/map.h"
+    "src/map_edge.cc"
+    "src/map_edge.h"
+    "src/memory_defs.h"
+    "src/memory_manager.cc"
+    "src/memory_manager.h"
+    "src/memory.cc"
+    "src/memory.h"
+    "src/message.cc"
+    "src/message.h"
+    "src/mouse_manager.cc"
+    "src/mouse_manager.h"
+    "src/mouse.cc"
+    "src/mouse.h"
+    "src/movie_effect.cc"
+    "src/movie_effect.h"
+    "src/movie_lib.cc"
+    "src/movie_lib.h"
+    "src/movie.cc"
+    "src/movie.h"
+    "src/nevs.cc"
+    "src/nevs.h"
+    "src/obj_types.h"
+    "src/object.cc"
+    "src/object.h"
+    "src/ogg_decoder.cc"
+    "src/ogg_decoder.h"
+    "src/opcode_context.cc"
+    "src/opcode_context.h"
+    "src/options.cc"
+    "src/options.h"
+    "src/options_schema.cc"
+    "src/options_schema.h"
+    "src/options_settings_model.cc"
+    "src/options_settings_model.h"
+    "src/palette.cc"
+    "src/palette.h"
+    "src/party_member.cc"
+    "src/party_member.h"
+    "src/pcx.cc"
+    "src/pcx.h"
+    "src/perk_defs.h"
+    "src/perk.cc"
+    "src/perk.h"
+    "src/pipboy.cc"
+    "src/pipboy.h"
+    "src/proto_instance.cc"
+    "src/proto_instance.h"
+    "src/proto_types.h"
+    "src/proto.cc"
+    "src/proto.h"
+    "src/queue.cc"
+    "src/queue.h"
+    "src/random.cc"
+    "src/random.h"
+    "src/reaction.cc"
+    "src/reaction.h"
+    "src/region.cc"
+    "src/region.h"
+    "src/scripts.cc"
+    "src/scripts.h"
+    "src/select_file_list.cc"
+    "src/select_file_list.h"
+    "src/skill_defs.h"
+    "src/skill.cc"
+    "src/skill.h"
+    "src/skilldex.cc"
+    "src/skilldex.h"
+    "src/sound_decoder.cc"
+    "src/sound_decoder.h"
+    "src/sound_effects_cache.cc"
+    "src/sound_effects_cache.h"
+    "src/sound_effects_list.cc"
+    "src/sound_effects_list.h"
+    "src/sound_tempo.cc"
+    "src/sound_tempo.h"
+    "src/sound.cc"
+    "src/sound.h"
+    "src/stat_defs.h"
+    "src/stat.cc"
+    "src/stat.h"
+    "src/string_parsers.cc"
+    "src/string_parsers.h"
+    "src/svga.cc"
+    "src/svga.h"
+    "src/text_font.cc"
+    "src/text_font.h"
+    "src/text_object.cc"
+    "src/text_object.h"
+    "src/tile.cc"
+    "src/tile.h"
+    "src/tile_hires_stencil.cc"
+    "src/tile_hires_stencil.h"
+    "src/trait_defs.h"
+    "src/trait.cc"
+    "src/trait.h"
+    "src/version.cc"
+    "src/version.h"
+    "src/widget.cc"
+    "src/widget.h"
+    "src/win32.cc"
+    "src/win32.h"
+    "src/window_manager_private.cc"
+    "src/window_manager_private.h"
+    "src/window_manager.cc"
+    "src/window_manager.h"
+    "src/window.cc"
+    "src/window.h"
+    "src/word_wrap.cc"
+    "src/word_wrap.h"
+    "src/dev_autotest.cc"
+    "src/dev_autotest.h"
+    "src/world_view.cc"
+    "src/world_view.h"
+    "src/worldmap.cc"
+    "src/worldmap.h"
+    "src/xfile.cc"
+    "src/xfile.h"
+)
+
+set(FALLOUT_PLATFORM_SOURCES
+    "src/audio_engine.cc"
+    "src/audio_engine.h"
+    "src/delay.cc"
+    "src/delay.h"
+    "src/fps_limiter.cc"
+    "src/fps_limiter.h"
+    "src/platform_compat.cc"
+    "src/platform_compat.h"
+    "src/pointer_registry.cc"
+    "src/pointer_registry.h"
+    "src/preferences.cc"
+    "src/preferences.h"
+    "src/settings.cc"
+    "src/settings.h"
+    "src/sfall_config.cc"
+    "src/sfall_config.h"
+    "src/sfall_ext.cc"
+    "src/sfall_ext.h"
+    "src/sfall_filesystem.cc"
+    "src/sfall_filesystem.h"
+    "src/sfall_global_vars.cc"
+    "src/sfall_global_vars.h"
+    "src/sfall_global_scripts.cc"
+    "src/sfall_global_scripts.h"
+    "src/sfall_ini.cc"
+    "src/sfall_ini.h"
+    "src/sfall_kb_helpers.cc"
+    "src/sfall_kb_helpers.h"
+    "src/sfall_lists.cc"
+    "src/sfall_lists.h"
+    "src/sfall_metarules.cc"
+    "src/sfall_metarules.h"
+    "src/sfall_object_name.cc"
+    "src/sfall_object_name.h"
+    "src/sfall_opcodes.cc"
+    "src/sfall_opcodes.h"
+    "src/sfall_script_hooks.cc"
+    "src/script_sound.cc"
+    "src/script_sound.h"
+    "src/sfall_arrays.cc"
+    "src/sfall_arrays.h"
+    "src/sfall_animation.cc"
+    "src/sfall_animation.h"
+    "src/sfall_callbacks.cc"
+    "src/sfall_callbacks.h"
+    "src/touch.cc"
+    "src/gamepad.cc"
+    "src/mui_pad.cc"
+    "src/mui_touchpad.cc"
+    "src/mui_pad.h"
+    "src/mui_dual.cc"
+    "src/mui_dual.h"
+    "src/mui_skin.cc"
+    "src/mui_gameskin.cc"
+    "src/mui_gameskin.h"
+    "src/mui_skin.h"
+    "src/gamepad.h"
+    "src/touch_controls.cc"
+    "src/touch_controls.h"
+    "src/touch_hud.cc"
+    "src/touch_hud.h"
+    "src/hud_layout.cc"
+    "src/hud_layout.h"
+    "src/mui.cc"
+    "src/mui.h"
+    "src/mui_dialog.cc"
+    "src/mui_action_list.cc"
+    "src/mui_automap.cc"
+    "src/mui_barter.cc"
+    "src/mui_called_shot.cc"
+    "src/mui_combat_panel.cc"
+    "src/mui_character.cc"
+    "src/mui_game_dialog.cc"
+    "src/mui_icons.cc"
+    "src/mui_icons.h"
+    "src/mui_inventory.cc"
+    "src/mui_items.cc"
+    "src/mui_loot.cc"
+    "src/mui_map_view.cc"
+    "src/mui_map_view.h"
+    "src/mui_movie.cc"
+    "src/mui_character_selector.cc"
+    "src/mui_elevator.cc"
+    "src/mui_main_menu.cc"
+    "src/mui_options.cc"
+    "src/mui_scenes.cc"
+    "src/mui_worldmap.cc"
+    "src/mui_mods.cc"
+    "src/mui_preferences.cc"
+    "src/mui_loadsave.cc"
+    "src/mui_notify.cc"
+    "src/mui_pipboy.cc"
+    "src/mui_notify.h"
+    "src/mui_quantity.cc"
+    "src/mui_use_item.cc"
+    "src/perf_monitor.cc"
+    "src/world_texture.cc"
+    "src/world_texture.h"
+    "src/map_hints.cc"
+    "src/tactical_view.cc"
+    "src/tactical_view.h"
+    "src/game_charset.cc"
+    "src/game_charset.h"
+    "src/ground_lines.cc"
+    "src/ground_lines.h"
+    "src/map_hints.h"
+    "src/player_commands.cc"
+    "src/player_commands.h"
+    "src/perf_monitor.h"
+    "src/mui_screens.h"
+    "src/mui_draw.cc"
+    "src/mui_draw.h"
+    "src/mui_floating_text.cc"
+    "src/mui_floating_text.h"
+    "src/touch.h"
+    "src/action_log.cc"
+    "src/action_log.h"
+    "src/touch_log.cc"
+    "src/touch_log.h"
+    "src/scan_unimplemented.cc"
+	"third_party/lodepng/lodepng.cpp"
+)
+
+target_sources(${EXECUTABLE_NAME} PUBLIC
+    ${FALLOUT_ENGINE_SOURCES}
+    "src/main.cc"
+    "src/main.h"
+)
+
+target_sources(${EXECUTABLE_NAME} PUBLIC ${FALLOUT_PLATFORM_SOURCES})
+
+target_include_directories(${EXECUTABLE_NAME} PUBLIC "third_party/lodepng")
+target_include_directories(${EXECUTABLE_NAME} PRIVATE "third_party/stb")
+
+set(FALLOUT_HAVE_STB_VORBIS OFF)
+if(FALLOUT_AUDIO_OGG)
+    if(EXISTS "${CMAKE_SOURCE_DIR}/third_party/stb_vorbis/stb_vorbis.c")
+        set(_fallout_stb_vorbis_dir "${CMAKE_SOURCE_DIR}/third_party/stb_vorbis")
+    else()
+        set(_fallout_stb_vorbis_dir "${FALLOUT_STB_VORBIS_DIR}")
+        if(NOT _fallout_stb_vorbis_dir)
+            find_path(_fallout_stb_vorbis_dir
+                NAMES "stb_vorbis.c"
+                DOC "Directory containing stb_vorbis.c")
+        endif()
+    endif()
+
+    if(_fallout_stb_vorbis_dir AND EXISTS "${_fallout_stb_vorbis_dir}/stb_vorbis.c")
+        set(FALLOUT_HAVE_STB_VORBIS ON)
+        target_include_directories(${EXECUTABLE_NAME} PRIVATE "${_fallout_stb_vorbis_dir}")
+    else()
+        message(STATUS "OGG support disabled: stb_vorbis.c not found")
+    endif()
+endif()
+
+if(FALLOUT_HAVE_STB_VORBIS)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE HAVE_STB_VORBIS=1)
+else()
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE HAVE_STB_VORBIS=0)
+endif()
+
+target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_DIAGNOSTICS=$<BOOL:${FALLOUT_DIAGNOSTICS}>)
+
+# The version the app shows (Android: its versionName), CE's otherwise.
+set(FALLOUT_APP_VERSION "" CACHE STRING "Version shown in the settings' About section")
+if(FALLOUT_APP_VERSION)
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE FALLOUT_APP_VERSION="${FALLOUT_APP_VERSION}")
+endif()
+
+if(IOS)
+    target_sources(${EXECUTABLE_NAME} PUBLIC
+        "src/platform/ios/paths.h"
+        "src/platform/ios/paths.mm"
+        "src/platform/ios/quick_toolbar.h"
+        "src/platform/ios/quick_toolbar.cc"
+    )
+endif()
+
+if(WIN32)
+    target_compile_definitions(${EXECUTABLE_NAME} PUBLIC
+        _CRT_SECURE_NO_WARNINGS
+        _CRT_NONSTDC_NO_WARNINGS
+        NOMINMAX
+        WIN32_LEAN_AND_MEAN
+        _STATIC_CPPLIB
+    )
+endif()
+
+if(MINGW)
+     target_compile_definitions(${EXECUTABLE_NAME} PUBLIC
+        _USE_MATH_DEFINES
+    )
+endif()
+
+if(WIN32)
+    target_link_libraries(${EXECUTABLE_NAME}
+        winmm
+    )
+endif()
+
+# Dual-screen devices (AYN Thor): the second screen's surface
+# (BottomScreen.java).
+if(ANDROID)
+    target_sources(${EXECUTABLE_NAME} PUBLIC
+        "src/bottom_screen.cc"
+        "src/bottom_screen.h"
+    )
+    target_link_libraries(${EXECUTABLE_NAME}
+        android
+        log
+    )
+else()
+    # Elsewhere no second screen, but tests can make one
+    # (tools/mui_preview/bottom_input_test.cc).
+    target_sources(${EXECUTABLE_NAME} PUBLIC
+        "src/bottom_screen_desktop.cc"
+        "src/bottom_screen.h"
+    )
+endif()
+
+if(MSVC)
+    target_link_libraries(${EXECUTABLE_NAME} 
+        debug libcpmtd
+        optimized libcpmt
+    )
+endif()
+
+if(MINGW)
+    target_link_options(${EXECUTABLE_NAME} PRIVATE
+        -static
+        -static-libgcc
+        -static-libstdc++
+    )
+endif()
+
+if(WIN32)
+    target_sources(${EXECUTABLE_NAME} PUBLIC
+        "os/windows/fallout2-ce.ico"
+        "os/windows/fallout2-ce.rc"
+    )
+endif()
+
+if(APPLE)
+    if(IOS)
+        set(RESOURCES
+            "os/ios/AppIcon.xcassets"
+            "os/ios/LaunchScreen.storyboard"
+        )
+
+        target_sources(${EXECUTABLE_NAME} PUBLIC ${RESOURCES})
+        set_source_files_properties(${RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+
+        set_target_properties(${EXECUTABLE_NAME} PROPERTIES
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/os/ios/Info.plist"
+            XCODE_ATTRIBUTE_ASSETCATALOG_COMPILER_APPICON_NAME "AppIcon"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.alexbatalov.fallout2-ce"
+            XCODE_ATTRIBUTE_TARGETED_DEVICE_FAMILY "1,2"
+        )
+
+        set(MACOSX_BUNDLE_BUNDLE_NAME "${EXECUTABLE_NAME}")
+        set(MACOSX_BUNDLE_DISPLAY_NAME "Fallout 2")
+    else()
+        set(RESOURCES
+            "os/macos/fallout2-ce.icns"
+        )
+
+        target_link_libraries(${EXECUTABLE_NAME} "-framework CoreFoundation")
+
+        target_sources(${EXECUTABLE_NAME} PUBLIC ${RESOURCES})
+        set_source_files_properties(${RESOURCES} PROPERTIES MACOSX_PACKAGE_LOCATION "Resources")
+
+        set_target_properties(${EXECUTABLE_NAME} PROPERTIES
+            OUTPUT_NAME "Fallout II Community Edition"
+            MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/os/macos/Info.plist"
+            XCODE_ATTRIBUTE_EXECUTABLE_NAME "${EXECUTABLE_NAME}"
+            XCODE_ATTRIBUTE_PRODUCT_BUNDLE_IDENTIFIER "com.alexbatalov.fallout2-ce"
+        )
+
+        set(MACOSX_BUNDLE_ICON_FILE "fallout2-ce.icns")
+        set(MACOSX_BUNDLE_BUNDLE_NAME "Fallout II: Community Edition")
+        set(MACOSX_BUNDLE_DISPLAY_NAME "Fallout II")
+    endif()
+
+    set(MACOSX_BUNDLE_GUI_IDENTIFIER "com.alexbatalov.fallout2-ce")
+    set(MACOSX_BUNDLE_SHORT_VERSION_STRING "1.3.0")
+    set(MACOSX_BUNDLE_BUNDLE_VERSION "1.3.0")
+endif()
+
+if((NOT ${CMAKE_SYSTEM_NAME} MATCHES "Emscripten"))
+    if(FALLOUT_VENDORED)
+        add_subdirectory("third_party/zlib")
+        add_subdirectory("third_party/sdl2")
+    else()
+        find_package(ZLIB)
+        find_package(SDL2)
+    endif()
+else()
+    set( CMAKE_C_FLAGS                      "${CMAKE_C_FLAGS} \
+                                            --use-port=sdl2 \
+                                            --use-port=sdl2_mixer \
+                                            --use-port=zlib" )
+    set( CMAKE_CXX_FLAGS                    "${CMAKE_CXX_FLAGS} \
+                                            --use-port=sdl2 \
+                                            --use-port=sdl2_mixer \
+                                            --use-port=zlib \
+                                            -std=c++17" )
+
+
+    set( CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g")
+    set( CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
+
+    set( CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -O1")
+    set( CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -O1")
+
+    if(OPTION_WASM_64)
+        target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sMEMORY64" )
+        set( CMAKE_C_FLAGS                      "${CMAKE_C_FLAGS} -sMEMORY64" )
+        set( CMAKE_CXX_FLAGS                    "${CMAKE_CXX_FLAGS} -sMEMORY64" )
+        add_compile_options( -sMEMORY64 )
+    endif()
+
+    if(OPTION_WASM_JSPI)
+        target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sJSPI" )
+    else()
+        target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sASYNCIFY" )
+        target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sASYNCIFY_STACK_SIZE=20480" )
+    endif()
+
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sENVIRONMENT=web" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sALLOW_MEMORY_GROWTH" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-MEMORY_GROWTH_LINEAR_STEP=32mb" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sNO_DISABLE_EXCEPTION_CATCHING" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-lidbfs.js" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sCASE_INSENSITIVE_FS" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sMODULARIZE" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sEXPORTED_RUNTIME_METHODS=callMain,addRunDependency,removeRunDependency" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sEXPORT_ALL" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sEXPORT_NAME=fallout2ce" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "-sEXIT_RUNTIME" )
+    target_link_options( ${EXECUTABLE_NAME} PRIVATE "$<$<CONFIG:DEBUG>:-g>" )
+endif()
+
+
+add_subdirectory("third_party/fpattern")
+target_link_libraries(${EXECUTABLE_NAME} fpattern::fpattern)
+target_link_libraries(${EXECUTABLE_NAME} fpattern_windows::fpattern_windows)
+
+target_link_libraries(${EXECUTABLE_NAME} ${ZLIB_LIBRARIES})
+target_include_directories(${EXECUTABLE_NAME} PRIVATE ${ZLIB_INCLUDE_DIRS})
+
+target_link_libraries(${EXECUTABLE_NAME} ${SDL2_LIBRARIES})
+target_link_libraries(${EXECUTABLE_NAME} ${SDL2_MAIN_LIBRARIES})
+target_include_directories(${EXECUTABLE_NAME} PRIVATE ${SDL2_INCLUDE_DIRS})
+
+# The game's import on Android reads the archive the player chose
+# (src/import_archive.cc): .zip itself (zlib; Deflate64 through zlib's
+# contrib/infback9), .7z, .rar and .tar through libarchive (liblzma for .7z).
+# Its library for the app's Java side; ce-import-tool tries it on a computer
+# (macOS, Linux: the vendored libarchive is configured for those).
+if(FALLOUT_VENDORED AND (NOT IOS) AND (NOT WIN32) AND (NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten"))
+    add_subdirectory("third_party/xz")
+    add_subdirectory("third_party/libarchive")
+
+    add_library(import_archive STATIC
+        "src/import_archive.cc"
+        "src/import_archive.h"
+        "${ZLIB_SOURCE_DIR}/contrib/infback9/infback9.c"
+        "${ZLIB_SOURCE_DIR}/contrib/infback9/inftree9.c"
+    )
+    target_include_directories(import_archive PUBLIC "src")
+    target_include_directories(import_archive PRIVATE "${ZLIB_SOURCE_DIR}/contrib/infback9" ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(import_archive PUBLIC archive_read)
+    # Archives over 2 GB on 32-bit systems (pread, lseek).
+    target_compile_definitions(import_archive PRIVATE _FILE_OFFSET_BITS=64)
+    set_target_properties(import_archive PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+    if(ANDROID)
+        add_library(fallout2-import SHARED "src/import_archive_jni.cc" "src/save_composition.cc")
+        target_link_libraries(fallout2-import PRIVATE import_archive)
+        # Only the JNI functions (JNIEXPORT) are needed from outside.
+        set_target_properties(fallout2-import PROPERTIES
+            C_VISIBILITY_PRESET hidden
+            CXX_VISIBILITY_PRESET hidden
+            VISIBILITY_INLINES_HIDDEN ON)
+        target_link_options(fallout2-import PRIVATE "-Wl,--gc-sections")
+    else()
+        add_executable(ce-import-tool "tools/ce_import_tool.cc")
+        target_link_libraries(ce-import-tool PRIVATE import_archive)
+        if(APPLE)
+            set_target_properties(ce-import-tool PROPERTIES
+                XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+                XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+            )
+        endif()
+    endif()
+endif()
+
+if((NOT ANDROID) AND (NOT IOS) AND (NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten"))
+    add_executable(ce-dat-tool
+        "tools/dat_tool.cc"
+        "tools/dat_archive.cc"
+        "tools/fo1_dat_lzss.cc"
+        "src/dfile.cc"
+        "src/platform_compat.cc"
+    )
+
+    if(APPLE)
+        set_target_properties(ce-dat-tool PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+        )
+    endif()
+
+    target_link_libraries(ce-dat-tool
+        fpattern_windows::fpattern_windows
+        ${ZLIB_LIBRARIES}
+        ${SDL2_LIBRARIES}
+    )
+    if(WIN32)
+        target_link_libraries(ce-dat-tool winmm)
+    endif()
+    if(MINGW)
+        target_link_options(ce-dat-tool PRIVATE
+            -static
+            -static-libgcc
+            -static-libstdc++
+        )
+    endif()
+    target_include_directories(ce-dat-tool PRIVATE "src")
+    target_include_directories(ce-dat-tool PRIVATE ${ZLIB_INCLUDE_DIRS})
+    target_include_directories(ce-dat-tool PRIVATE ${SDL2_INCLUDE_DIRS})
+
+    add_executable(ce-frm2png
+        "tools/ce_frm2png.cc"
+        "src/platform_compat.cc"
+        "third_party/lodepng/lodepng.cpp"
+    )
+
+    if(APPLE)
+        set_target_properties(ce-frm2png PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+        )
+    endif()
+
+    target_include_directories(ce-frm2png PRIVATE "src")
+    target_include_directories(ce-frm2png PRIVATE "third_party/lodepng")
+    target_include_directories(ce-frm2png PRIVATE ${SDL2_INCLUDE_DIRS})
+    target_include_directories(ce-frm2png PRIVATE ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(ce-frm2png ${SDL2_LIBRARIES})
+    target_link_libraries(ce-frm2png ${ZLIB_LIBRARIES})
+    
+    if(MINGW)
+        target_link_options(ce-frm2png PRIVATE
+            -static
+            -static-libgcc
+            -static-libstdc++
+        )
+    endif()
+
+    if(APPLE)
+        file(GLOB_RECURSE CE_DAT_INPUTS CONFIGURE_DEPENDS "${CMAKE_SOURCE_DIR}/files/ce.dat/*")
+        set(CE_DAT_RESOURCE_PATH "${CMAKE_CURRENT_BINARY_DIR}/ce.dat")
+
+        add_custom_command(
+            OUTPUT "${CE_DAT_RESOURCE_PATH}"
+            COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}"
+            COMMAND $<TARGET_FILE:ce-dat-tool> create "${CMAKE_SOURCE_DIR}/files/ce.dat" "${CE_DAT_RESOURCE_PATH}"
+            DEPENDS ce-dat-tool ${CE_DAT_INPUTS}
+            COMMENT "Generating ce.dat for app bundle"
+            VERBATIM
+        )
+
+        add_custom_target(ce-dat-resource DEPENDS "${CE_DAT_RESOURCE_PATH}")
+        add_dependencies(${EXECUTABLE_NAME} ce-dat-resource)
+
+        target_sources(${EXECUTABLE_NAME} PRIVATE "${CE_DAT_RESOURCE_PATH}")
+        set_source_files_properties("${CE_DAT_RESOURCE_PATH}" PROPERTIES
+            GENERATED TRUE
+            MACOSX_PACKAGE_LOCATION "Resources")
+    endif()
+endif()
+
+if((NOT ANDROID) AND (NOT IOS) AND (NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten"))
+    if(WIN32)
+        add_executable(mapper-ce WIN32)
+    else()
+        add_executable(mapper-ce)
+    endif()
+
+    target_sources(mapper-ce PUBLIC
+        "src/bottom_screen_desktop.cc" # the engine's UI posts frames to a second screen the mapper doesn't have
+        "src/bottom_screen.h"
+        ${FALLOUT_ENGINE_SOURCES}
+        ${FALLOUT_PLATFORM_SOURCES}
+        "src/mapper/map_edge_setup.cc"
+        "src/mapper/map_edge_setup.h"
+        "src/mapper/map_func.cc"
+        "src/mapper/map_func.h"
+        "src/mapper/mapper.cc"
+        "src/mapper/mapper.h"
+        "src/mapper/mp_instance.cc"
+        "src/mapper/mp_instance.h"
+        "src/mapper/mp_proto.cc"
+        "src/mapper/mp_proto.h"
+        "src/mapper/mp_scrpt.cc"
+        "src/mapper/mp_scrpt.h"
+        "src/mapper/mp_targt.cc"
+        "src/mapper/mp_targt.h"
+        "src/mapper/mp_utils.cc"
+        "src/mapper/mp_utils.h"
+        "src/mapper/mp_text.cc"
+        "src/mapper/mp_text.h"
+    )
+
+    target_compile_definitions(mapper-ce PUBLIC FALLOUT_MAPPER)
+
+    if(WIN32)
+        target_compile_definitions(mapper-ce PUBLIC
+            _CRT_SECURE_NO_WARNINGS
+            _CRT_NONSTDC_NO_WARNINGS
+            NOMINMAX
+            WIN32_LEAN_AND_MEAN
+            _STATIC_CPPLIB
+        )
+
+        if(MINGW)
+            target_compile_definitions(mapper-ce PUBLIC
+                _USE_MATH_DEFINES
+            )
+
+            target_link_options(mapper-ce PRIVATE
+                -static
+                -static-libgcc
+                -static-libstdc++
+            )
+        endif()
+
+        target_link_libraries(mapper-ce
+            winmm
+        )
+        
+        if(MSVC)
+            target_link_libraries(mapper-ce
+                debug libcpmtd
+                optimized libcpmt
+            )
+        endif()
+
+        target_sources(mapper-ce PUBLIC
+            "os/windows/fallout2-ce.rc"
+        )
+    endif()
+
+    if(APPLE)
+        target_link_libraries(mapper-ce "-framework CoreFoundation")
+        set_target_properties(mapper-ce PROPERTIES
+            XCODE_ATTRIBUTE_CODE_SIGNING_ALLOWED "NO"
+            XCODE_ATTRIBUTE_CODE_SIGNING_REQUIRED "NO"
+        )
+    endif()
+
+    target_include_directories(mapper-ce PUBLIC "third_party/lodepng")
+    target_include_directories(mapper-ce PRIVATE "third_party/stb")
+    target_include_directories(mapper-ce PRIVATE "src")
+    target_include_directories(mapper-ce PRIVATE ${ZLIB_INCLUDE_DIRS})
+    target_include_directories(mapper-ce PRIVATE ${SDL2_INCLUDE_DIRS})
+
+    target_link_libraries(mapper-ce
+        fpattern::fpattern
+        fpattern_windows::fpattern_windows
+        ${ZLIB_LIBRARIES}
+        ${SDL2_LIBRARIES}
+        ${SDL2_MAIN_LIBRARIES}
+    )
+endif()
+
+if(APPLE)
+    if(IOS)
+        install(TARGETS ${EXECUTABLE_NAME} DESTINATION "Payload")
+
+        set(CPACK_GENERATOR "ZIP")
+        set(CPACK_INCLUDE_TOPLEVEL_DIRECTORY OFF)
+        set(CPACK_PACKAGE_FILE_NAME "fallout2-ce")
+        set(CPACK_ARCHIVE_FILE_EXTENSION "ipa")
+    else()
+        install(TARGETS ${EXECUTABLE_NAME} DESTINATION .)
+
+        set(CPACK_GENERATOR "DragNDrop")
+        set(CPACK_DMG_DISABLE_APPLICATIONS_SYMLINK ON)
+        set(CPACK_PACKAGE_FILE_NAME "Fallout II Community Edition")
+    endif()
+
+    include(CPack)
+endif()
+
+# Add option to enable AddressSanitizer
+option(ENABLE_ASAN "Enable AddressSanitizer for debug builds" OFF)
+
+# Set C++ standard and other existing settings
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED YES)
+set(CMAKE_CXX_EXTENSIONS NO)
+
+# Define ASan flags for supported compilers (GCC, Clang, MSVC)
+if(ENABLE_ASAN)
+    if(CMAKE_SYSTEM_NAME MATCHES "Emscripten|Android|iOS")
+        message(WARNING "AddressSanitizer is not supported on ${CMAKE_SYSTEM_NAME}. Disabling ASan.")
+        set(ENABLE_ASAN OFF)
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
+        message(STATUS "Enabling AddressSanitizer for debug build (GCC/Clang)")
+        set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer -fno-optimize-sibling-calls")
+        set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${ASAN_FLAGS}")
+        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${ASAN_FLAGS}")
+        set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} ${ASAN_FLAGS}")
+        set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} ${ASAN_FLAGS}")
+    elseif(CMAKE_CXX_COMPILER_ID MATCHES "MSVC")
+        # Check if using clang-cl or native MSVC
+        if(CMAKE_CXX_COMPILER MATCHES "clang-cl")
+            message(STATUS "Enabling AddressSanitizer for debug build (clang-cl)")
+            set(ASAN_FLAGS "-fsanitize=address -fno-omit-frame-pointer")
+            set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${ASAN_FLAGS}")
+            set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${ASAN_FLAGS}")
+            set(CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG} -fsanitize=address")
+            set(CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG} -fsanitize=address")
+        else()
+            message(STATUS "Enabling AddressSanitizer for debug build (MSVC)")
+            set(ASAN_FLAGS "/fsanitize=address")
+            # MSVC requires /Zi or /Z7 for debug info with ASan
+            set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} ${ASAN_FLAGS} /Zi")
+            set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${ASAN_FLAGS} /Zi")
+            # No additional linker flags needed for MSVC ASan
+            # Disable incremental linking as it's incompatible with ASan
+            string(REPLACE "/INCREMENTAL" "/INCREMENTAL:NO" CMAKE_EXE_LINKER_FLAGS_DEBUG "${CMAKE_EXE_LINKER_FLAGS_DEBUG}")
+            string(REPLACE "/INCREMENTAL" "/INCREMENTAL:NO" CMAKE_SHARED_LINKER_FLAGS_DEBUG "${CMAKE_SHARED_LINKER_FLAGS_DEBUG}")
+        endif()
+    else()
+        message(WARNING "AddressSanitizer is not supported with ${CMAKE_CXX_COMPILER_ID}. Disabling ASan.")
+        set(ENABLE_ASAN OFF)
+    endif()
+endif()
+
+# Existing debug flags for Emscripten (ensure ASan doesn't conflict)
+if(CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+    set(CMAKE_C_FLAGS_DEBUG "${CMAKE_C_FLAGS_DEBUG} -g")
+    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -g")
+endif()
+
+# CE: Tests of engine-independent parts (tests/*_test.cc), desktop POSIX
+# builds: `cmake --build <build> --target <name>`, then `ctest` in <build>.
+if(UNIX AND NOT ANDROID AND NOT IOS AND NOT CMAKE_SYSTEM_NAME MATCHES "Emscripten")
+    enable_testing()
+
+    function(ce_add_test name)
+        add_executable(${name} EXCLUDE_FROM_ALL "tests/${name}.cc" ${ARGN})
+        target_include_directories(${name} PRIVATE "src")
+        add_test(NAME ${name} COMMAND ${name})
+    endfunction()
+
+    ce_add_test(save_catalog_test "src/save_catalog.cc" "src/save_records.cc" "src/save_storage.cc")
+    ce_add_test(suspend_slot_test "src/save_catalog.cc" "src/save_records.cc" "src/save_storage.cc")
+    ce_add_test(suspend_gate_test)
+    ce_add_test(sound_tempo_test "src/sound_tempo.cc")
+    ce_add_test(mod_list_test "src/mod_list.cc" "src/mod_profiles.cc")
+    target_include_directories(mod_list_test PRIVATE ${SDL2_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(mod_list_test ${SDL2_LIBRARIES})
+    ce_add_test(touch_gesture_test "src/touch.cc")
+    target_compile_definitions(touch_gesture_test PRIVATE FALLOUT_FORCE_TOUCH_ONLY)
+    target_include_directories(touch_gesture_test PRIVATE ${SDL2_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
+    # SDL headers also come with the SDL target when the include variable is empty.
+    target_link_libraries(touch_gesture_test ${SDL2_LIBRARIES})
+    ce_add_test(sfall_arrays_test "src/sfall_arrays.cc" "src/sfall_global_vars.cc" "src/sfall_ext.cc")
+    target_include_directories(sfall_arrays_test PRIVATE ${SDL2_INCLUDE_DIRS} ${ZLIB_INCLUDE_DIRS})
+    target_link_libraries(sfall_arrays_test ${SDL2_LIBRARIES})
+    # Keep this unit test independent of the engine's mod loader and VM.
+    target_compile_options(sfall_arrays_test PRIVATE -ffunction-sections -fdata-sections)
+    if(APPLE)
+        target_link_options(sfall_arrays_test PRIVATE -Wl,-dead_strip)
+    else()
+        target_link_options(sfall_arrays_test PRIVATE -Wl,--gc-sections)
+    endif()
+    set_tests_properties(sfall_arrays_test PROPERTIES TIMEOUT 10)
+endif()

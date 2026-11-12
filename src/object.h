@@ -1,0 +1,184 @@
+#ifndef OBJECT_H
+#define OBJECT_H
+
+#include <vector>
+
+#include "art.h"
+#include "color.h"
+#include "db.h"
+#include "geometry.h"
+#include "inventory.h"
+#include "map_defs.h"
+#include "obj_types.h"
+
+namespace fallout {
+
+typedef struct ObjectWithFlags {
+    ObjectFlags flags;
+    Object* object;
+} ObjectWithFlags;
+
+extern Color* _wallBlendTable;
+extern Object* _moveBlockObj;
+
+extern Color _commonGrayTable[COLOR_COUNT];
+extern Object* gEgg;
+extern Object* gDude;
+
+int objectsInit(unsigned char* buf, int width, int height, int pitch);
+void objectsReset();
+void objectsExit();
+int objectRead(Object* obj, File* stream);
+bool objectIsSavable(Object* obj);
+int objectLoadAll(File* stream);
+int objectSaveAll(File* stream);
+void _obj_render_pre_roof(Rect* rect, int elevation);
+void _obj_render_post_roof(Rect* rect, int elevation);
+int objectCreateWithFrmIdProtoId(Object** objectPtr, const FrmId& frmId, const ProtoId& protoId);
+int objectCreateWithProtoId(Object** objectPtr, const ProtoId& protoId);
+int _obj_copy(Object** a1, Object* a2);
+int _obj_connect(Object* obj, int tile_index, int elev, Rect* rect);
+int _obj_disconnect(Object* obj, Rect* rect);
+int _obj_offset(Object* obj, int x, int y, Rect* rect);
+int _obj_move(Object* a1, int a2, int a3, int elevation, Rect* a5);
+int objectSetLocation(Object* obj, int tile, int elevation, Rect* rect);
+int _obj_reset_roof();
+int objectSetFrmId(Object* obj, const FrmId& frmId, Rect* rect);
+int objectSetFrame(Object* obj, int frame, Rect* rect);
+int objectSetNextFrame(Object* obj, Rect* rect);
+int objectSetPrevFrame(Object* obj, Rect* rect);
+int objectSetRotation(Object* obj, Rotation rotation, Rect* rect);
+int objectRotateClockwise(Object* obj, Rect* rect);
+int objectRotateCounterClockwise(Object* obj, Rect* rect);
+void _obj_rebuild_all_light();
+int objectSetLight(Object* obj, int lightDistance, int lightIntensity, Rect* rect);
+int objectGetLightIntensity(Object* obj);
+int _obj_turn_on_light(Object* obj, Rect* rect);
+int _obj_turn_off_light(Object* obj, Rect* rect);
+int objectShow(Object* obj, Rect* rect);
+int objectHide(Object* obj, Rect* rect);
+int objectEnableOutline(Object* obj, Rect* rect);
+int objectDisableOutline(Object* obj, Rect* rect);
+int _obj_toggle_flat(Object* obj, Rect* rect);
+int objectDestroy(Object* object, Rect* rect);
+int _obj_inven_free(Inventory* inventory);
+bool _obj_action_can_use(Object* obj);
+bool _obj_action_can_talk_to(Object* obj);
+bool _obj_portal_is_walk_thru(Object* obj);
+Object* objectFindById(int a1);
+Object* objectGetOwner(Object* obj);
+void _obj_remove_all();
+Object* objectFindFirst();
+Object* objectFindNext();
+Object* objectFindFirstAtElevation(int elevation);
+Object* objectFindNextAtElevation();
+Object* objectFindFirstAtLocation(int elevation, int tile);
+Object* objectFindNextAtLocation();
+void objectGetRect(Object* obj, Rect* rect);
+bool _obj_occupied(int tile_num, int elev);
+Object* _obj_blocking_at(Object* excludeObj, int tile_num, int elev);
+Object* _obj_shoot_blocking_at(Object* excludeObj, int tile, int elev);
+Object* _obj_ai_blocking_at(Object* excludeObj, int tile, int elevation);
+int _obj_scroll_blocking_at(int tile_num, int elev);
+Object* _obj_sight_blocking_at(Object* excludeObj, int tile_num, int elev);
+int objectGetDistanceBetween(Object* object1, Object* object2);
+int objectGetDistanceBetweenTiles(Object* object1, int tile1, Object* object2, int tile2);
+bool objectWithinWalkDistance(Object* critter, Object* target);
+int objectListCreate(int tile, int elevation, ObjectType objectType, Object*** objectsPtr);
+void objectListFree(Object** objects);
+void _translucent_trans_buf_to_buf(unsigned char* src, int srcWidth, int srcHeight, int srcPitch, unsigned char* dest, int destX, int destY, int destPitch, Color* blendTable, Color* colorTable);
+void _dark_trans_buf_to_buf(unsigned char* src, int srcWidth, int srcHeight, int srcPitch, unsigned char* dest, int destX, int destY, int destPitch, int light);
+void _dark_translucent_trans_buf_to_buf(unsigned char* src, int srcWidth, int srcHeight, int srcPitch, unsigned char* dest, int destX, int destY, int destPitch, int light, Color* blendTable, Color* colorTable);
+void _intensity_mask_buf_to_buf(unsigned char* src, int srcWidth, int srcHeight, int srcPitch, unsigned char* dest, int destPitch, unsigned char* mask, int maskPitch, int light);
+int objectSetOutline(Object* obj, OutlineType outlineType, Rect* rect);
+int objectClearOutline(Object* obj, Rect* rect);
+// CE: The enemy picked as the target (touch controls): in the tactical view
+// its outline is the only one cycling (`objectSeeThroughOutlineColor`).
+// nullptr - none. Only compared with, never read (it may be gone).
+void objectSetTargetOutline(Object* obj);
+// CE: The tactical view (touch controls): critters (the dude aside) and
+// items on the ground are drawn see-through (65% opaque), so the tiles under them show; every critter
+// with an outline shows it (target highlight aside). Drawing only - objects aren't changed (their flags
+// are saved). Redraws the map when it changes.
+void objectSetSeeThrough(bool seeThrough);
+// While see-through: what covers each pixel of the game's buffer (laid out
+// as it is), so the tactical view's tiles drawn over the map show as lying
+// on the ground. nullptr - not see-through.
+enum class ObjectSeeThroughCover : unsigned char {
+    // The floor, flat objects.
+    None,
+    // A see-through critter or item.
+    SeeThrough,
+    // Anything else standing there (scenery, walls, roofs).
+    Solid,
+    // The dude, the critters' outlines: over the tiles.
+    Top,
+};
+const unsigned char* objectSeeThroughCover(int* width, int* height, int* pitch);
+// While see-through, drawing the map's standing objects and roofs: [src]'s
+// pixels (non-zero) drawn at [destX], [destY] of the buffer cover the
+// ground there with [cover]. [eggMask] - the dude's see-through-walls egg
+// it was drawn through (`_intensity_mask_buf_to_buf`): mostly transparent
+// pixels don't cover.
+void objectSeeThroughMark(const unsigned char* src, int width, int height, int srcPitch, int destX, int destY, ObjectSeeThroughCover cover, const unsigned char* eggMask = nullptr, int eggPitch = 0);
+// While see-through the critters' outlines (and the tactical view's tiles)
+// don't cycle, but the picked target's (`objectSetTargetOutline`): the
+// palette entry [object]'s outline is drawn with; false - as the game draws
+// it.
+bool objectSeeThroughOutlineColor(Object* object, Color* color);
+// The still color of a friendly or hostile outline: a palette entry the
+// palette doesn't cycle.
+Color objectStillOutlineColor(OutlineType outlineType);
+// The map scrolled by (dx, dy): the cover moves as the buffer does.
+void objectSeeThroughScrolled(int dx, int dy);
+ObjectFlags _obj_intersects_with(Object* object, int x, int y);
+int _obj_create_intersect_list(int x, int y, int elevation, ObjectType objectType, ObjectWithFlags** entriesPtr);
+void _obj_delete_intersect_list(ObjectWithFlags** a1);
+void obj_set_seen(int tile);
+void _obj_clear_seen();
+void _obj_process_seen();
+char* objectGetName(Object* obj);
+char* objectGetDescription(Object* obj);
+void _obj_preload_art_cache(MapHeaderFlags flags);
+int _obj_save_dude(File* stream);
+int _obj_load_dude(File* stream);
+void _obj_fix_violence_settings(int* frmId);
+
+Object* objectTypedFindById(int id, ObjectType type);
+bool isExitGridAt(int tile, int elevation);
+
+inline bool objectHasOutline(Object* obj)
+{
+    return obj != nullptr && (obj->outline & OUTLINE_TYPE_MAX) != OUTLINE_TYPE_NONE;
+}
+
+inline bool objectHasVisibleOutline(Object* obj)
+{
+    return objectHasOutline(obj) && (obj->outline & OUTLINE_DISABLED) == OUTLINE_TYPE_NONE;
+}
+
+// RAII wrapper for Object*.
+class UniqueObject {
+public:
+    UniqueObject() = default;
+    explicit UniqueObject(Object* ptr);
+    ~UniqueObject();
+    UniqueObject(const UniqueObject&) = delete;
+    UniqueObject& operator=(const UniqueObject&) = delete;
+    UniqueObject(UniqueObject&& other) noexcept;
+    UniqueObject& operator=(UniqueObject&& other) noexcept;
+    Object* get() const { return _ptr; }
+    Object* operator->() const { return _ptr; }
+    Object& operator*() const { return *_ptr; }
+    Object* release();
+    void reset(Object* p = nullptr);
+
+private:
+    Object* _ptr = nullptr;
+};
+
+int objectCreateWithFrmIdProtoId(UniqueObject& obj, const FrmId& frmId, const ProtoId& protoId);
+
+} // namespace fallout
+
+#endif /* OBJECT_H */

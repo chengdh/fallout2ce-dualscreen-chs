@@ -1,0 +1,153 @@
+name: Build
+
+# The dual-screen (AYN Thor) port: the Android APK only. Every push to main
+# replaces the "latest" pre-release, so the newest APK is always at
+# https://github.com/<owner>/<repo>/releases/download/latest/Fallout2-Dualscreen.apk
+# A pushed version tag (v0.1, v0.2...) makes a permanent release named after it.
+
+on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    types:
+      - opened
+      - synchronize
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  code-format:
+    name: Code format check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+
+      - name: clang-format
+        run: |
+          clang-format --version
+          find src -type f \( -name \*.cc -o -name \*.h \) | xargs clang-format --dry-run --Werror
+
+  android:
+    name: Android APK (arm64)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # to publish the releases
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+          cache: gradle
+
+      - name: Cache cmake build
+        uses: actions/cache@v4
+        with:
+          path: os/android/app/.cxx
+          key: android-cmake-dual-v1
+
+      # A stable signing key from the repo secrets (THOR_KEYSTORE_B64, the
+      # keystore in base64, and THOR_KEYSTORE_PASSWORD), so each APK installs
+      # over the last one. Without them the APK is signed with a one-off key:
+      # it still installs, but the next one needs the old one uninstalled.
+      - name: Signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.THOR_KEYSTORE_B64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.THOR_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ]; then
+            # Pasted secrets often carry a stray newline or space.
+            PW=$(printf '%s' "$KEYSTORE_PASSWORD" | tr -d ' \t\r\n')
+            printf '%s' "$KEYSTORE_B64" | tr -d ' \t\r\n' | base64 -d > os/android/thor.keystore
+            if ! keytool -list -keystore os/android/thor.keystore -storepass "$PW" -alias fallout2thor > /dev/null; then
+              echo "::error::THOR_KEYSTORE_B64 / THOR_KEYSTORE_PASSWORD don't open the key: re-paste both secrets"
+              exit 1
+            fi
+            {
+              echo "storeFile=thor.keystore"
+              echo "storePassword=$PW"
+              echo "keyAlias=fallout2thor"
+              echo "keyPassword=$PW"
+            } > os/android/debug-keystore.properties
+            echo "SIGNING=stable" >> "$GITHUB_ENV"
+            echo "stable signing key: yes"
+          else
+            echo "SIGNING=one-off" >> "$GITHUB_ENV"
+            echo "::warning::No THOR_KEYSTORE_B64 / THOR_KEYSTORE_PASSWORD secrets: this APK uses a one-off key"
+          fi
+
+      # The phone build: optimized native code, what is played and tested.
+      - name: Build APK
+        run: |
+          cd os/android
+          ./gradlew --no-daemon assemblePhone
+
+      - name: Collect APK
+        run: |
+          mkdir -p out
+          cp os/android/app/build/outputs/apk/phone/app-phone.apk out/Fallout2-Dualscreen.apk
+          (cd out && sha256sum Fallout2-Dualscreen.apk > Fallout2-Dualscreen.apk.sha256)
+          "$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner" verify --verbose out/Fallout2-Dualscreen.apk
+          ls -la out
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Fallout2-Dualscreen-apk
+          path: out/Fallout2-Dualscreen.apk*
+          if-no-files-found: error
+
+      - name: Publish as the latest build
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ "$SIGNING" = "stable" ]; then
+            SIGN_NOTE="Signed with the port's stable key: installs over earlier builds."
+          else
+            SIGN_NOTE="Signed with a one-off key (no signing secrets set yet): uninstall the previous build before installing this one."
+          fi
+          cat > notes.md <<EOF
+          Built automatically from ${GITHUB_SHA::7}: $(git log -1 --format=%s)
+
+          Fallout 2 Community Engine for Android phones (imbaner/fallout2-ce-mobile), adapted for dual-screen devices such as the AYN Thor. Installs beside the original app, never over it. No game data inside: you need your own copy of Fallout 2.
+
+          ${SIGN_NOTE}
+
+          Free and non-commercial, under the Sustainable Use License (LICENSE.md).
+          EOF
+          sed -i 's/^          //' notes.md
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest out/Fallout2-Dualscreen.apk out/Fallout2-Dualscreen.apk.sha256 --prerelease --target "$GITHUB_SHA" \
+            --title "Latest build ($(date -u +%Y-%m-%d) ${GITHUB_SHA::7})" \
+            --notes-file notes.md
+
+      - name: Publish the release for a version tag
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            gh release upload "$TAG" out/Fallout2-Dualscreen.apk out/Fallout2-Dualscreen.apk.sha256 --clobber
+          else
+            # Hand-written notes in docs/release-notes/<tag>.md when there are any.
+            if [ -f "docs/release-notes/$TAG.md" ]; then notes=(--notes-file "docs/release-notes/$TAG.md"); else notes=(--generate-notes); fi
+            gh release create "$TAG" out/Fallout2-Dualscreen.apk out/Fallout2-Dualscreen.apk.sha256 --verify-tag --latest \
+              --title "Fallout 2 Dualscreen $TAG" "${notes[@]}"
+          fi

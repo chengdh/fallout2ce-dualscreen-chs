@@ -1,0 +1,1087 @@
+#include "character_selector.h"
+
+#include <stdio.h>
+#include <string.h>
+
+#include <algorithm>
+#include <vector>
+
+#include "art.h"
+#include "character_editor.h"
+#include "color.h"
+#include "content_config.h"
+#include "critter.h"
+#include "db.h"
+#include "debug.h"
+#include "dev_autotest.h"
+#include "draw.h"
+#include "game.h"
+#include "game_sound.h"
+#include "input.h"
+#include "kb.h"
+#include "mainmenu.h"
+#include "memory.h"
+#include "message.h"
+#include "mouse.h"
+#include "mui.h"
+#include "object.h"
+#include "palette.h"
+#include "platform_compat.h"
+#include "preferences.h"
+#include "proto.h"
+#include "settings.h"
+#include "skill.h"
+#include "stat.h"
+#include "string_utils.h"
+#include "svga.h"
+#include "text_font.h"
+#include "trait.h"
+#include "window_manager.h"
+
+namespace fallout {
+
+#define CS_WINDOW_WIDTH (640)
+#define CS_WINDOW_HEIGHT (480)
+
+#define CS_WINDOW_BACKGROUND_X (40)
+#define CS_WINDOW_BACKGROUND_Y (30)
+#define CS_WINDOW_BACKGROUND_WIDTH (560)
+#define CS_WINDOW_BACKGROUND_HEIGHT (300)
+
+#define CS_WINDOW_PREVIOUS_BUTTON_X (292)
+#define CS_WINDOW_PREVIOUS_BUTTON_Y (320)
+
+#define CS_WINDOW_NEXT_BUTTON_X (318)
+#define CS_WINDOW_NEXT_BUTTON_Y (320)
+
+#define CS_WINDOW_TAKE_BUTTON_X (81)
+#define CS_WINDOW_TAKE_BUTTON_Y (323)
+
+#define CS_WINDOW_MODIFY_BUTTON_X (435)
+#define CS_WINDOW_MODIFY_BUTTON_Y (320)
+
+#define CS_WINDOW_CREATE_BUTTON_X (80)
+#define CS_WINDOW_CREATE_BUTTON_Y (425)
+
+#define CS_WINDOW_BACK_BUTTON_X (461)
+#define CS_WINDOW_BACK_BUTTON_Y (425)
+
+#define CS_WINDOW_NAME_MID_X (318)
+#define CS_WINDOW_PRIMARY_STAT_MID_X (362)
+#define CS_WINDOW_SECONDARY_STAT_MID_X (379)
+#define CS_WINDOW_BIO_X (438)
+
+enum PremadeCharacter : int {
+    PREMADE_CHARACTER_NARG,
+    PREMADE_CHARACTER_CHITSA,
+    PREMADE_CHARACTER_MINGUN,
+    PREMADE_CHARACTER_COUNT,
+    PREMADE_CHARACTER_FIRST = PREMADE_CHARACTER_NARG
+};
+
+inline PremadeCharacter operator++(PremadeCharacter& e, int)
+{
+    PremadeCharacter result = e;
+    e = static_cast<PremadeCharacter>(static_cast<int>(e) + 1);
+    return result;
+}
+
+inline PremadeCharacter operator--(PremadeCharacter& e, int)
+{
+    PremadeCharacter result = e;
+    e = static_cast<PremadeCharacter>(static_cast<int>(e) - 1);
+    return result;
+}
+
+typedef struct PremadeCharacterDescription {
+    char fileName[20];
+    InterfaceFrameId face;
+    char vid[20];
+} PremadeCharacterDescription;
+
+static bool characterSelectorWindowInit();
+static void characterSelectorWindowFree();
+static bool characterSelectorWindowRefresh();
+static bool characterSelectorWindowRenderFace();
+static bool characterSelectorWindowRenderStats();
+static bool characterSelectorWindowRenderBio();
+static bool characterSelectorWindowFatalError(bool result);
+
+static void premadeCharactersLocalizePath(char* path);
+
+// 0x51C84C premade_index
+static PremadeCharacter gCurrentPremadeCharacter = PREMADE_CHARACTER_NARG;
+
+// 0x51C850 premade_characters
+static PremadeCharacterDescription gPremadeCharacterDescriptions[PREMADE_CHARACTER_COUNT] = {
+    { "premade\\combat", InterfaceFrameId::PremadeCharacterCombat, "VID 208-197-88-125" },
+    { "premade\\stealth", InterfaceFrameId::PremadeCharacterStealth, "VID 208-206-49-229" },
+    { "premade\\diplomat", InterfaceFrameId::PremadeCharacterDiplomat, "VID 208-206-49-227" },
+};
+
+// 0x51C8D4 premade_total
+static int gPremadeCharacterCount = PREMADE_CHARACTER_COUNT;
+
+// 0x51C7F8 select_window_id
+static int gCharacterSelectorWindow = -1;
+
+// 0x51C7FC select_window_buffer
+static unsigned char* gCharacterSelectorWindowBuffer = nullptr;
+
+// 0x51C800 monitor
+static unsigned char* gCharacterSelectorBackground = nullptr;
+
+// 0x51C804 previous_button
+static int gCharacterSelectorWindowPreviousButton = -1;
+
+// 0x51C810 next_button
+static int gCharacterSelectorWindowNextButton = -1;
+
+// 0x51C81C take_button
+static int gCharacterSelectorWindowTakeButton = -1;
+
+// 0x51C828 modify_button
+static int gCharacterSelectorWindowModifyButton = -1;
+
+// 0x51C834 create_button
+static int gCharacterSelectorWindowCreateButton = -1;
+
+// 0x51C840 back_button
+static int gCharacterSelectorWindowBackButton = -1;
+
+static FrmImage _takeButtonNormalFrmImage;
+static FrmImage _takeButtonPressedFrmImage;
+static FrmImage _modifyButtonNormalFrmImage;
+static FrmImage _modifyButtonPressedFrmImage;
+static FrmImage _createButtonNormalFrmImage;
+static FrmImage _createButtonPressedFrmImage;
+static FrmImage _backButtonNormalFrmImage;
+static FrmImage _backButtonPressedFrmImage;
+static FrmImage _nextButtonNormalFrmImage;
+static FrmImage _nextButtonPressedFrmImage;
+static FrmImage _previousButtonNormalFrmImage;
+static FrmImage _previousButtonPressedFrmImage;
+
+static std::vector<PremadeCharacterDescription> gCustomPremadeCharacterDescriptions;
+
+// 0x4A71D0 select_character
+int characterSelectorOpen()
+{
+    if (muiIsEnabled()) {
+        return muiCharacterSelectorRun();
+    }
+
+#if __APPLE__ && TARGET_OS_IOS
+    touch_set_touchscreen_mode(true);
+#endif
+    if (!characterSelectorWindowInit()) {
+        return 0;
+    }
+
+    bool cursorWasHidden = cursorIsHidden();
+    if (cursorWasHidden) {
+        mouseShowCursor();
+    }
+
+    mainMenuShowSubscreen(true);
+
+    int rc = 0;
+    bool done = false;
+    while (!done) {
+        sharedFpsLimiter.mark();
+
+        if (_game_user_wants_to_quit != GAME_QUIT_REQUEST_NONE) {
+            break;
+        }
+
+        int keyCode = inputGetInput();
+
+        switch (keyCode) {
+        case KEY_MINUS:
+        case KEY_UNDERSCORE:
+            brightnessDecrease();
+            break;
+        case KEY_EQUAL:
+        case KEY_PLUS:
+            brightnessIncrease();
+            break;
+        case KEY_UPPERCASE_B:
+        case KEY_LOWERCASE_B:
+        case KEY_ESCAPE:
+            rc = 3;
+            done = true;
+            break;
+        case KEY_UPPERCASE_C:
+        case KEY_LOWERCASE_C:
+            _ResetPlayer();
+            if (characterEditorShow(1) == 0) {
+                rc = 2;
+                done = true;
+            } else {
+                characterSelectorWindowRefresh();
+            }
+
+            break;
+        case KEY_UPPERCASE_M:
+        case KEY_LOWERCASE_M:
+            if (!characterEditorShow(1)) {
+                rc = 2;
+                done = true;
+            } else {
+                characterSelectorWindowRefresh();
+            }
+
+            break;
+        case KEY_UPPERCASE_T:
+        case KEY_LOWERCASE_T:
+            rc = 2;
+            done = true;
+
+            break;
+        case KEY_F10:
+            showQuitConfirmationDialog();
+            break;
+        case KEY_ARROW_LEFT:
+            soundPlayFile("ib2p1xx1");
+            // FALLTHROUGH
+        case 500:
+            gCurrentPremadeCharacter--;
+            if (gCurrentPremadeCharacter < PREMADE_CHARACTER_FIRST) {
+                gCurrentPremadeCharacter = static_cast<PremadeCharacter>(gPremadeCharacterCount - 1);
+            }
+
+            characterSelectorWindowRefresh();
+            break;
+        case KEY_ARROW_RIGHT:
+            soundPlayFile("ib2p1xx1");
+            // FALLTHROUGH
+        case 501:
+            gCurrentPremadeCharacter++;
+            if (gCurrentPremadeCharacter >= gPremadeCharacterCount) {
+                gCurrentPremadeCharacter = PREMADE_CHARACTER_FIRST;
+            }
+
+            characterSelectorWindowRefresh();
+            break;
+        }
+
+        devAutotestTick();
+        renderPresent();
+        sharedFpsLimiter.throttle();
+    }
+
+    if (rc == 2) {
+        mainMenuFadeOutForGameStart(true);
+    } else {
+        mainMenuFadeOutForMenuReturn(true);
+    }
+    characterSelectorWindowFree();
+
+    if (cursorWasHidden) {
+        mouseHideCursor();
+    }
+
+#if __APPLE__ && TARGET_OS_IOS
+    touch_set_touchscreen_mode(false);
+#endif
+    return rc;
+}
+
+// 0x4A7468 select_init
+static bool characterSelectorWindowInit()
+{
+    if (gCharacterSelectorWindow != -1) {
+        return false;
+    }
+
+    int characterSelectorWindowX = (screenGetWidth() - CS_WINDOW_WIDTH) / 2;
+    int characterSelectorWindowY = (screenGetHeight() - CS_WINDOW_HEIGHT) / 2;
+    int characterSelectorWindowFlags = mainMenuSubscreenWindowFlags(0, WINDOW_MODAL | WINDOW_MOVE_ON_TOP);
+    gCharacterSelectorWindow = windowCreate(characterSelectorWindowX, characterSelectorWindowY, CS_WINDOW_WIDTH, CS_WINDOW_HEIGHT, _colorTable[0], characterSelectorWindowFlags);
+    if (gCharacterSelectorWindow == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowBuffer = windowGetBuffer(gCharacterSelectorWindow);
+    if (gCharacterSelectorWindowBuffer == nullptr) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    FrmImage backgroundFrmImage;
+    if (!backgroundFrmImage.lock(InterfaceFrameId::CharacterSelectorBackground)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    blitBufferToBuffer(backgroundFrmImage.getData(),
+        CS_WINDOW_WIDTH,
+        CS_WINDOW_HEIGHT,
+        CS_WINDOW_WIDTH,
+        gCharacterSelectorWindowBuffer,
+        CS_WINDOW_WIDTH);
+
+    gCharacterSelectorBackground = (unsigned char*)internal_malloc(CS_WINDOW_BACKGROUND_WIDTH * CS_WINDOW_BACKGROUND_HEIGHT);
+    if (gCharacterSelectorBackground == nullptr)
+        return characterSelectorWindowFatalError(false);
+
+    blitBufferToBuffer(backgroundFrmImage.getData() + CS_WINDOW_WIDTH * CS_WINDOW_BACKGROUND_Y + CS_WINDOW_BACKGROUND_X,
+        CS_WINDOW_BACKGROUND_WIDTH,
+        CS_WINDOW_BACKGROUND_HEIGHT,
+        CS_WINDOW_WIDTH,
+        gCharacterSelectorBackground,
+        CS_WINDOW_BACKGROUND_WIDTH);
+
+    backgroundFrmImage.unlock();
+
+    // Setup "Previous" button.
+    if (!_previousButtonNormalFrmImage.lock(InterfaceFrameId::LeftArrowUp)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    if (!_previousButtonPressedFrmImage.lock(InterfaceFrameId::LeftArrowDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowPreviousButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_PREVIOUS_BUTTON_X,
+        CS_WINDOW_PREVIOUS_BUTTON_Y,
+        20,
+        18,
+        -1,
+        -1,
+        -1,
+        500,
+        _previousButtonNormalFrmImage.getData(),
+        _previousButtonPressedFrmImage.getData(),
+        nullptr,
+        0);
+    if (gCharacterSelectorWindowPreviousButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowPreviousButton, _gsound_med_butt_press, _gsound_med_butt_release);
+
+    // Setup "Next" button.
+    if (!_nextButtonNormalFrmImage.lock(InterfaceFrameId::RightArrowUp)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    if (!_nextButtonPressedFrmImage.lock(InterfaceFrameId::RightArrowDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowNextButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_NEXT_BUTTON_X,
+        CS_WINDOW_NEXT_BUTTON_Y,
+        20,
+        18,
+        -1,
+        -1,
+        -1,
+        501,
+        _nextButtonNormalFrmImage.getData(),
+        _nextButtonPressedFrmImage.getData(),
+        nullptr,
+        0);
+    if (gCharacterSelectorWindowNextButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowNextButton, _gsound_med_butt_press, _gsound_med_butt_release);
+
+    // Setup "Take" button.
+    if (!_takeButtonNormalFrmImage.lock(InterfaceFrameId::LittleRedButtonUp)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    if (!_takeButtonPressedFrmImage.lock(InterfaceFrameId::LittleRedButtonDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowTakeButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_TAKE_BUTTON_X,
+        CS_WINDOW_TAKE_BUTTON_Y,
+        15,
+        16,
+        -1,
+        -1,
+        -1,
+        KEY_LOWERCASE_T,
+        _takeButtonNormalFrmImage.getData(),
+        _takeButtonPressedFrmImage.getData(),
+        nullptr,
+        BUTTON_FLAG_TRANSPARENT);
+    if (gCharacterSelectorWindowTakeButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowTakeButton, _gsound_red_butt_press, _gsound_red_butt_release);
+
+    // Setup "Modify" button.
+    if (!_modifyButtonNormalFrmImage.lock(InterfaceFrameId::LittleRedButtonUp))
+        return characterSelectorWindowFatalError(false);
+
+    if (!_modifyButtonPressedFrmImage.lock(InterfaceFrameId::LittleRedButtonDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowModifyButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_MODIFY_BUTTON_X,
+        CS_WINDOW_MODIFY_BUTTON_Y,
+        15,
+        16,
+        -1,
+        -1,
+        -1,
+        KEY_LOWERCASE_M,
+        _modifyButtonNormalFrmImage.getData(),
+        _modifyButtonPressedFrmImage.getData(),
+        nullptr,
+        BUTTON_FLAG_TRANSPARENT);
+    if (gCharacterSelectorWindowModifyButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowModifyButton, _gsound_red_butt_press, _gsound_red_butt_release);
+
+    // Setup "Create" button.
+    if (!_createButtonNormalFrmImage.lock(InterfaceFrameId::LittleRedButtonUp)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    if (!_createButtonPressedFrmImage.lock(InterfaceFrameId::LittleRedButtonDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowCreateButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_CREATE_BUTTON_X,
+        CS_WINDOW_CREATE_BUTTON_Y,
+        15,
+        16,
+        -1,
+        -1,
+        -1,
+        KEY_LOWERCASE_C,
+        _createButtonNormalFrmImage.getData(),
+        _createButtonPressedFrmImage.getData(),
+        nullptr,
+        BUTTON_FLAG_TRANSPARENT);
+    if (gCharacterSelectorWindowCreateButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowCreateButton, _gsound_red_butt_press, _gsound_red_butt_release);
+
+    // Setup "Back" button.
+    if (!_backButtonNormalFrmImage.lock(InterfaceFrameId::LittleRedButtonUp)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    if (!_backButtonPressedFrmImage.lock(InterfaceFrameId::LittleRedButtonDown)) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    gCharacterSelectorWindowBackButton = buttonCreate(gCharacterSelectorWindow,
+        CS_WINDOW_BACK_BUTTON_X,
+        CS_WINDOW_BACK_BUTTON_Y,
+        15,
+        16,
+        -1,
+        -1,
+        -1,
+        KEY_ESCAPE,
+        _backButtonNormalFrmImage.getData(),
+        _backButtonPressedFrmImage.getData(),
+        nullptr,
+        BUTTON_FLAG_TRANSPARENT);
+    if (gCharacterSelectorWindowBackButton == -1) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    buttonSetCallbacks(gCharacterSelectorWindowBackButton, _gsound_red_butt_press, _gsound_red_butt_release);
+
+    gCurrentPremadeCharacter = PREMADE_CHARACTER_NARG;
+
+    windowRefresh(gCharacterSelectorWindow);
+
+    if (!characterSelectorWindowRefresh()) {
+        return characterSelectorWindowFatalError(false);
+    }
+
+    return true;
+}
+
+// 0x4A7AD4 select_exit
+static void characterSelectorWindowFree()
+{
+    if (gCharacterSelectorWindow == -1) {
+        return;
+    }
+
+    if (gCharacterSelectorWindowPreviousButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowPreviousButton);
+        gCharacterSelectorWindowPreviousButton = -1;
+    }
+
+    _previousButtonNormalFrmImage.unlock();
+    _previousButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorWindowNextButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowNextButton);
+        gCharacterSelectorWindowNextButton = -1;
+    }
+
+    _nextButtonNormalFrmImage.unlock();
+    _nextButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorWindowTakeButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowTakeButton);
+        gCharacterSelectorWindowTakeButton = -1;
+    }
+
+    _takeButtonNormalFrmImage.unlock();
+    _takeButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorWindowModifyButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowModifyButton);
+        gCharacterSelectorWindowModifyButton = -1;
+    }
+
+    _modifyButtonNormalFrmImage.unlock();
+    _modifyButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorWindowCreateButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowCreateButton);
+        gCharacterSelectorWindowCreateButton = -1;
+    }
+
+    _createButtonNormalFrmImage.unlock();
+    _createButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorWindowBackButton != -1) {
+        buttonDestroy(gCharacterSelectorWindowBackButton);
+        gCharacterSelectorWindowBackButton = -1;
+    }
+
+    _backButtonNormalFrmImage.unlock();
+    _backButtonPressedFrmImage.unlock();
+
+    if (gCharacterSelectorBackground != nullptr) {
+        internal_free(gCharacterSelectorBackground);
+        gCharacterSelectorBackground = nullptr;
+    }
+
+    windowDestroy(gCharacterSelectorWindow);
+    gCharacterSelectorWindow = -1;
+}
+
+// 0x4A7D58 select_update_display
+static bool characterSelectorWindowRefresh()
+{
+    if (!premadeCharacterLoad(gCurrentPremadeCharacter)) {
+        return false;
+    }
+
+    blitBufferToBuffer(gCharacterSelectorBackground,
+        CS_WINDOW_BACKGROUND_WIDTH,
+        CS_WINDOW_BACKGROUND_HEIGHT,
+        CS_WINDOW_BACKGROUND_WIDTH,
+        gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * CS_WINDOW_BACKGROUND_Y + CS_WINDOW_BACKGROUND_X,
+        CS_WINDOW_WIDTH);
+
+    bool success = false;
+    if (characterSelectorWindowRenderFace()) {
+        if (characterSelectorWindowRenderStats()) {
+            success = characterSelectorWindowRenderBio();
+        }
+    }
+
+    windowRefresh(gCharacterSelectorWindow);
+
+    return success;
+}
+
+// 0x4A7E08 select_display_portrait
+static bool characterSelectorWindowRenderFace()
+{
+    bool success = false;
+
+    FrmImage faceFrmImage;
+    const FrmId faceFrmId = FrmId(gCustomPremadeCharacterDescriptions[gCurrentPremadeCharacter].face);
+    if (faceFrmImage.lock(faceFrmId)) {
+        unsigned char* data = faceFrmImage.getData();
+        if (data != nullptr) {
+            int width = faceFrmImage.getWidth();
+            int height = faceFrmImage.getHeight();
+            blitBufferToBufferTrans(data, width, height, width, (gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * 23 + 27), CS_WINDOW_WIDTH);
+            success = true;
+        }
+        faceFrmImage.unlock();
+    }
+
+    return success;
+}
+
+// 0x4A7EA8 select_display_stats
+static bool characterSelectorWindowRenderStats()
+{
+    char* str;
+    char text[260];
+    int length;
+    int value;
+    MessageListItem messageListItem;
+
+    int oldFont = fontGetCurrent();
+    fontSetCurrent(101);
+
+    fontGetCharacterWidth(0x20);
+
+    int vh = fontGetLineHeight();
+    int y = 40;
+
+    // NAME
+    str = objectGetName(gDude);
+    stringCopy(text, str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_NAME_MID_X - (length / 2), text, 160, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // STRENGTH
+    y += vh + vh + vh;
+
+    value = critterGetStat(gDude, STAT_STRENGTH);
+    str = statGetName(STAT_STRENGTH);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // PERCEPTION
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_PERCEPTION);
+    str = statGetName(STAT_PERCEPTION);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // ENDURANCE
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_ENDURANCE);
+    str = statGetName(STAT_ENDURANCE);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // CHARISMA
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_CHARISMA);
+    str = statGetName(STAT_CHARISMA);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // INTELLIGENCE
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_INTELLIGENCE);
+    str = statGetName(STAT_INTELLIGENCE);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // AGILITY
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_AGILITY);
+    str = statGetName(STAT_AGILITY);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // LUCK
+    y += vh;
+
+    value = critterGetStat(gDude, STAT_LUCK);
+    str = statGetName(STAT_LUCK);
+
+    snprintf(text, sizeof(text), "%s %02d", str, value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    str = statGetValueDescription(value);
+    snprintf(text, sizeof(text), "  %s", str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_PRIMARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    y += vh; // blank line
+
+    // HIT POINTS
+    y += vh;
+
+    messageListItem.num = 16;
+    text[0] = '\0';
+    if (messageListGetItem(&gMiscMessageList, &messageListItem)) {
+        stringCopy(text, messageListItem.text);
+    }
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    value = critterGetStat(gDude, STAT_MAXIMUM_HIT_POINTS);
+    snprintf(text, sizeof(text), " %d/%d", critterGetHitPoints(gDude), value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // ARMOR CLASS
+    y += vh;
+
+    str = statGetName(STAT_ARMOR_CLASS);
+    stringCopy(text, str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    value = critterGetStat(gDude, STAT_ARMOR_CLASS);
+    snprintf(text, sizeof(text), " %d", value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // ACTION POINTS
+    y += vh;
+
+    messageListItem.num = 15;
+    text[0] = '\0';
+    if (messageListGetItem(&gMiscMessageList, &messageListItem)) {
+        stringCopy(text, messageListItem.text);
+    }
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    value = critterGetStat(gDude, STAT_MAXIMUM_ACTION_POINTS);
+    snprintf(text, sizeof(text), " %d", value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    // MELEE DAMAGE
+    y += vh;
+
+    str = statGetName(STAT_MELEE_DAMAGE);
+    stringCopy(text, str);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    value = critterGetStat(gDude, STAT_MELEE_DAMAGE);
+    snprintf(text, sizeof(text), " %d", value);
+
+    length = fontGetStringWidth(text);
+    fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+    y += vh; // blank line
+
+    // SKILLS
+    Skill skills[DEFAULT_TAGGED_SKILLS];
+    skillsGetTagged(skills, DEFAULT_TAGGED_SKILLS);
+
+    for (int index = 0; index < DEFAULT_TAGGED_SKILLS; index++) {
+        y += vh;
+
+        str = skillGetName(skills[index]);
+        stringCopy(text, str);
+
+        length = fontGetStringWidth(text);
+        fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+
+        value = skillGetValue(gDude, skills[index]);
+        snprintf(text, sizeof(text), " %d%%", value);
+
+        length = fontGetStringWidth(text);
+        fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+    }
+
+    // TRAITS
+    Trait traits[TRAITS_MAX_SELECTED_COUNT];
+    traitsGetSelected(&(traits[0]), &(traits[1]));
+
+    for (int index = 0; index < TRAITS_MAX_SELECTED_COUNT; index++) {
+        str = traitGetName(traits[index]);
+        if (str == nullptr) {
+            continue;
+        }
+        stringCopy(text, str);
+
+        y += vh;
+
+        length = fontGetStringWidth(text);
+        fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_SECONDARY_STAT_MID_X - length, text, length, CS_WINDOW_WIDTH, COLOR_GREEN);
+    }
+
+    fontSetCurrent(oldFont);
+
+    return true;
+}
+
+// 0x4A8AE4 select_display_bio
+static bool characterSelectorWindowRenderBio()
+{
+    int oldFont = fontGetCurrent();
+    fontSetCurrent(101);
+
+    char path[COMPAT_MAX_PATH];
+    snprintf(path, sizeof(path), "%s.bio", gCustomPremadeCharacterDescriptions[gCurrentPremadeCharacter].fileName);
+    premadeCharactersLocalizePath(path);
+
+    File* stream = fileOpen(path, "rt");
+    if (stream != nullptr) {
+        int y = 40;
+        int lineHeight = fontGetLineHeight();
+
+        char string[256];
+        while (fileReadString(string, 256, stream) && y < 260) {
+            fontDrawText(gCharacterSelectorWindowBuffer + CS_WINDOW_WIDTH * y + CS_WINDOW_BIO_X, string, CS_WINDOW_WIDTH - CS_WINDOW_BIO_X, CS_WINDOW_WIDTH, COLOR_GREEN);
+            y += lineHeight;
+        }
+
+        fileClose(stream);
+    }
+
+    fontSetCurrent(oldFont);
+
+    return true;
+}
+
+// NOTE: Inlined.
+//
+// 0x4A8BD0 select_fatal_error
+static bool characterSelectorWindowFatalError(bool result)
+{
+    characterSelectorWindowFree();
+    return result;
+}
+
+void premadeCharactersInit()
+{
+    char* fileNamesString;
+    configGetString(&gContentConfig, CONTENT_CONFIG_CHARACTERS_SECTION, "premade_paths", &fileNamesString, nullptr);
+
+    char* faceFidsString;
+    configGetString(&gContentConfig, CONTENT_CONFIG_CHARACTERS_SECTION, "premade_fids", &faceFidsString, nullptr);
+
+    if (fileNamesString != nullptr && faceFidsString != nullptr) {
+        int fileNamesLength = 0;
+        for (char* pch = fileNamesString; pch != nullptr; pch = strchr(pch + 1, ',')) {
+            fileNamesLength++;
+        }
+
+        int faceFidsLength = 0;
+        for (char* pch = faceFidsString; pch != nullptr; pch = strchr(pch + 1, ',')) {
+            faceFidsLength++;
+        }
+
+        int premadeCharactersCount = std::min(fileNamesLength, faceFidsLength);
+        gCustomPremadeCharacterDescriptions.resize(premadeCharactersCount);
+
+        for (int index = 0; index < premadeCharactersCount; index++) {
+            char* pch;
+
+            pch = strchr(fileNamesString, ',');
+            if (pch != nullptr) {
+                *pch = '\0';
+            }
+
+            if (strlen(fileNamesString) > 11) {
+                // Sfall fails here.
+                continue;
+            }
+
+            snprintf(gCustomPremadeCharacterDescriptions[index].fileName, sizeof(gCustomPremadeCharacterDescriptions[index].fileName), "premade\\%s", fileNamesString);
+
+            if (pch != nullptr) {
+                *pch = ',';
+            }
+
+            fileNamesString = pch + 1;
+
+            pch = strchr(faceFidsString, ',');
+            if (pch != nullptr) {
+                *pch = '\0';
+            }
+
+            gCustomPremadeCharacterDescriptions[index].face = static_cast<InterfaceFrameId>(atoi(faceFidsString));
+
+            if (pch != nullptr) {
+                *pch = ',';
+            }
+
+            faceFidsString = pch + 1;
+
+            gCustomPremadeCharacterDescriptions[index].vid[0] = '\0';
+        }
+    }
+
+    if (gCustomPremadeCharacterDescriptions.empty()) {
+        gCustomPremadeCharacterDescriptions.resize(PREMADE_CHARACTER_COUNT);
+
+        for (int index = 0; index < PREMADE_CHARACTER_COUNT; index++) {
+            strcpy(gCustomPremadeCharacterDescriptions[index].fileName, gPremadeCharacterDescriptions[index].fileName);
+            gCustomPremadeCharacterDescriptions[index].face = gPremadeCharacterDescriptions[index].face;
+            strcpy(gCustomPremadeCharacterDescriptions[index].vid, gPremadeCharacterDescriptions[index].vid);
+        }
+    }
+
+    gPremadeCharacterCount = gCustomPremadeCharacterDescriptions.size();
+}
+
+void premadeCharactersExit()
+{
+    gCustomPremadeCharacterDescriptions.clear();
+}
+
+int premadeCharacterCount()
+{
+    return gPremadeCharacterCount;
+}
+
+int premadeCharacterSelected()
+{
+    return gCurrentPremadeCharacter;
+}
+
+void premadeCharacterSelect(int index)
+{
+    if (index >= 0 && index < gPremadeCharacterCount) {
+        gCurrentPremadeCharacter = static_cast<PremadeCharacter>(index);
+    }
+}
+
+bool premadeCharacterLoad(int index)
+{
+    if (index < 0 || index >= gPremadeCharacterCount) {
+        return false;
+    }
+
+    char path[COMPAT_MAX_PATH];
+    snprintf(path, sizeof(path), "%s.gcd", gCustomPremadeCharacterDescriptions[index].fileName);
+    premadeCharactersLocalizePath(path);
+
+    if (_proto_dude_init(path) == -1) {
+        debugPrint("\n ** Error in dude init! **\n");
+        return false;
+    }
+
+    return true;
+}
+
+InterfaceFrameId premadeCharacterFace(int index)
+{
+    if (index < 0 || index >= gPremadeCharacterCount) {
+        return InterfaceFrameId::Invalid;
+    }
+    return gCustomPremadeCharacterDescriptions[index].face;
+}
+
+std::vector<std::string> premadeCharacterBio(int index)
+{
+    std::vector<std::string> lines;
+    if (index < 0 || index >= gPremadeCharacterCount) {
+        return lines;
+    }
+
+    char path[COMPAT_MAX_PATH];
+    snprintf(path, sizeof(path), "%s.bio", gCustomPremadeCharacterDescriptions[index].fileName);
+    premadeCharactersLocalizePath(path);
+
+    File* stream = fileOpen(path, "rt");
+    if (stream != nullptr) {
+        char string[256];
+        while (fileReadString(string, sizeof(string), stream)) {
+            size_t length = strlen(string);
+            while (length > 0 && (string[length - 1] == '\n' || string[length - 1] == '\r')) {
+                string[--length] = '\0';
+            }
+            lines.push_back(string);
+        }
+        fileClose(stream);
+    }
+
+    return lines;
+}
+
+static void premadeCharactersLocalizePath(char* path)
+{
+    if (compat_strnicmp(path, "premade\\", 8) != 0) {
+        return;
+    }
+
+    const char* language = settings.system.language.c_str();
+    if (compat_stricmp(language, ENGLISH) == 0) {
+        return;
+    }
+
+    char localizedPath[COMPAT_MAX_PATH];
+    strncpy(localizedPath, path, 8);
+    strcpy(localizedPath + 8, language);
+    strcpy(localizedPath + 8 + strlen(language), path + 7);
+
+    int fileSize;
+    if (dbGetFileSize(localizedPath, &fileSize) == 0) {
+        strcpy(path, localizedPath);
+    }
+}
+
+} // namespace fallout

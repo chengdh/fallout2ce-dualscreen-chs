@@ -1,0 +1,815 @@
+#include "main.h"
+
+#include <algorithm>
+#include <limits.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "action_log.h"
+#include "art.h"
+#include "autorun.h"
+#include "character_selector.h"
+#include "color.h"
+#include "content_config.h"
+#include "credits.h"
+#include "cycle.h"
+#include "db.h"
+#include "debug.h"
+#include "dev_autotest.h"
+#include "draw.h"
+#include "endgame.h"
+#include "game.h"
+#include "game_commands.h"
+#include "game_mouse.h"
+#include "game_movie.h"
+#include "game_sound.h"
+#include "input.h"
+#include "kb.h"
+#include "loadsave.h"
+#include "mainmenu.h"
+#include "map.h"
+#include "mouse.h"
+#include "mui.h"
+#include "object.h"
+#include "palette.h"
+#include "platform_compat.h"
+#include "preferences.h"
+#include "proto.h"
+#include "random.h"
+#include "scripts.h"
+#include "settings.h"
+#include "sfall_callbacks.h"
+#include "sfall_global_scripts.h"
+#include "svga.h"
+#include "text_font.h"
+#include "window.h"
+#include "window_manager.h"
+#include "window_manager_private.h"
+#include "word_wrap.h"
+#include "worldmap.h"
+
+namespace fallout {
+
+static bool falloutInit(int argc, char** argv);
+static int main_reset_system();
+static void main_exit_system();
+static int _main_load_new(char* fname);
+static int main_loadgame_new();
+static void main_unload_new();
+static void mainParseCommandLineArguments(int argc, char** argv);
+static bool mainTryParseDevLoadGameSlot(const char* value, int* slotPtr);
+static void mainHandleDevEndgameRequests();
+static void mainRequestDevEndgameIfNeeded();
+static void mainRunDevEndgameMovieIfNeeded();
+static void mainLoop();
+static void mainRunGameLoopAndCleanup();
+static void showDeath();
+static int mainCurtainShow();
+static void mainCurtainHide(int win);
+static void _main_death_voiceover_callback();
+static int _mainDeathGrabTextFile(const char* fileName, char* dest);
+static void _mainDeathRemoveTimings(char* text);
+static int _mainDeathWordWrap(char* text, int width, short* beginnings, short* count);
+
+// 0x5194C8 mainMap
+static char _mainMap[] = "artemple.map";
+
+// 0x5194D8 main_game_paused
+static int _main_game_paused = 0;
+
+// 0x5194E8 main_show_death_scene
+static bool _main_show_death_scene = false;
+
+// 0x614838 main_death_voiceover_done
+static bool _main_death_voiceover_done;
+
+static int commandLineDevLoadGameSlot = -1;
+static bool commandLineDevEndgame = false;
+static bool commandLineDevNewGame = false;
+static const char* commandLineDevMap = nullptr;
+static bool commandLineDevEndgameMovie = false;
+
+// CE: `mainIsPlaying`.
+static bool gMainLoopRunning = false;
+
+bool mainIsPlaying()
+{
+    return gMainLoopRunning;
+}
+
+// 0x48099C
+int falloutMain(int argc, char** argv)
+{
+    if (!autorunMutexCreate()) {
+        return 1;
+    }
+
+    if (!falloutInit(argc, argv)) {
+        return 1;
+    }
+
+    mainParseCommandLineArguments(argc, argv);
+
+    // SFALL: Allow to skip intro movies
+    int skipOpeningMovies = settings.ui.skip_opening_movies;
+    if (skipOpeningMovies < 1) {
+        gameMoviePlay(MOVIE_IPLOGO, GAME_MOVIE_FADE_IN);
+        gameMoviePlay(MOVIE_INTRO, 0);
+        gameMoviePlay(MOVIE_CREDITS, 0);
+    } else {
+        // If the splash is shown but opening movies are skipped, fade it out
+        // before the main menu starts its normal fade-in.
+        paletteFadeTo(gPaletteBlack);
+    }
+
+    if (mainMenuWindowInit() == 0) {
+        bool done = false;
+        while (!done) {
+            keyboardReset();
+            if (!backgoundSoundIsPlaying()) {
+                _gsound_background_play_level_music(gameSoundGetMusicOverride("main_menu_music", "07desert"), GSOUND_LIMIT_BEFORE);
+            }
+            mainMenuWindowUnhide(true);
+
+            mouseShowCursor();
+            int devLoadGameSlot = commandLineDevLoadGameSlot;
+            bool devNewGame = commandLineDevNewGame;
+            int mainMenuRc;
+            if (devLoadGameSlot != -1) {
+                // CE: The dev start is used once (a new game asked for too
+                // would start after the loaded game ends).
+                commandLineDevLoadGameSlot = -1;
+                commandLineDevNewGame = false;
+                mainMenuRc = MAIN_MENU_LOAD_GAME;
+            } else if (devNewGame) {
+                commandLineDevNewGame = false;
+                mainMenuRc = MAIN_MENU_NEW_GAME;
+            } else {
+                mainMenuRc = mainMenuWindowHandleEvents();
+            }
+            mouseHideCursor();
+
+            switch (mainMenuRc) {
+            case MAIN_MENU_INTRO:
+                mainMenuWindowHide(true);
+                gameMoviePlay(MOVIE_INTRO, GAME_MOVIE_STOP_MUSIC);
+                gameMoviePlay(MOVIE_CREDITS, 0);
+                break;
+            case MAIN_MENU_NEW_GAME: {
+                mainMenuBeginSubscreen();
+                // CE: `--dev-new-game` starts with default character.
+                if (devNewGame || characterSelectorOpen() == 2) {
+                    mainMenuFinishSubscreen();
+
+                    if (!devNewGame) {
+                        gameMoviePlay(MOVIE_ELDER, GAME_MOVIE_STOP_MUSIC);
+                    }
+                    randomSeedPrerandom(-1);
+
+                    // SFALL: Call "before start" event
+                    sfallOnBeforeGameStart();
+
+                    // SFALL: Override starting map.
+                    char* mapName = nullptr;
+                    configGetString(&gContentConfig, CONTENT_CONFIG_START_SECTION, "map", &mapName, nullptr);
+
+                    // CE: `--dev-map` overrides starting map.
+                    if (commandLineDevMap != nullptr) {
+                        mapName = const_cast<char*>(commandLineDevMap);
+                    }
+
+                    char* mapNameCopy = compat_strdup(mapName != nullptr ? mapName : _mainMap);
+                    _main_load_new(mapNameCopy);
+                    free(mapNameCopy);
+
+                    // SFALL: AfterNewGameStartHook.
+                    sfall_gl_scr_exec_start_proc();
+                    // SFALL: Call "after loading" event
+                    sfallOnAfterNewGame();
+                    sfallOnAfterGameStarted();
+                    gGameLoaded = true;
+
+                    mainRunGameLoopAndCleanup();
+                    mainMenuWindowInit();
+                } else {
+                    mainMenuCancelSubscreen();
+                }
+                break;
+            }
+            case MAIN_MENU_CONTINUE:
+            case MAIN_MENU_LOAD_GAME: {
+                // CE: The mobile curtain covers the screen while a save loads
+                // (on a PC the menu's subscreen handling does).
+                int win = muiIsEnabled() ? mainCurtainShow() : -1;
+                mainMenuBeginSubscreen();
+
+                // NOTE: Uninline.
+                main_loadgame_new();
+
+                if (devLoadGameSlot != -1) {
+                    lsgDevSetLoadGameSlot(devLoadGameSlot);
+                }
+                // CE: Continue of the mobile main menu loads the save
+                // made last without the load screen.
+                int loadGameRc = mainMenuRc == MAIN_MENU_CONTINUE
+                    ? lsgContinueGame()
+                    : lsgLoadGame(LOAD_SAVE_MODE_FROM_MAIN_MENU);
+                if (loadGameRc == -1) {
+                    debugPrint("\n ** Error running LoadGame()! **\n");
+                }
+                mainCurtainHide(win);
+
+                if (loadGameRc > 0) {
+                    mainMenuFinishSubscreen();
+                    mainRunGameLoopAndCleanup();
+                    mainMenuWindowInit();
+                } else {
+                    main_unload_new();
+                    mainMenuCancelSubscreen();
+                    if (loadGameRc < 0) {
+                        main_reset_system();
+                    }
+                }
+                break;
+            }
+            case MAIN_MENU_TIMEOUT:
+                debugPrint("Main menu timed-out\n");
+                // FALLTHROUGH
+            case MAIN_MENU_SCREENSAVER:
+                mainMenuWindowHide(true);
+                gameMoviePlay(MOVIE_INTRO, GAME_MOVIE_PAUSE_MUSIC);
+                break;
+            case MAIN_MENU_OPTIONS: {
+                mainMenuBeginSubscreen();
+                doPreferences(true);
+                mainMenuCancelSubscreen();
+                break;
+            }
+            case MAIN_MENU_MODS:
+                mainMenuBeginSubscreen();
+                muiModsScreenRun();
+                mainMenuCancelSubscreen();
+                break;
+            case MAIN_MENU_CREDITS:
+                mainMenuWindowHide(true);
+                creditsOpen("credits.txt", InterfaceFrameId::Invalid, false);
+                break;
+            case MAIN_MENU_QUOTES:
+                // NOTE: There is a strange cmp at 0x480C50. Both operands are
+                // zero, set before the loop and do not modify afterwards. For
+                // clarity this condition is omitted.
+                mainMenuWindowHide(true);
+                creditsOpen("quotes.txt", InterfaceFrameId::Invalid, true);
+                break;
+            case MAIN_MENU_EXIT:
+            case -1:
+                done = true;
+                mainMenuWindowHide(true);
+                mainMenuWindowFree();
+                backgroundSoundDelete();
+                break;
+            case MAIN_MENU_SELFRUN:
+                break;
+            }
+        }
+    }
+
+    // NOTE: Uninline.
+    main_exit_system();
+
+    autorunMutexClose();
+
+    return 0;
+}
+
+// 0x480CC0
+static bool falloutInit(int argc, char** argv)
+{
+    // set flag to 1 to initialize _screen_buffer for WINDOW_TRANSPARENT
+    if (gameInitWithOptions("FALLOUT II", false, 0, WINDOW_MANAGER_INIT_FLAG_BUFFERED, argc, argv) == -1) {
+        return false;
+    }
+
+    return true;
+}
+
+static void mainParseCommandLineArguments(int argc, char** argv)
+{
+    const char* devLoadGamePrefix = "--dev-load-game=";
+    size_t devLoadGamePrefixLength = strlen(devLoadGamePrefix);
+
+    for (int arg = 1; arg < argc; arg += 1) {
+        if (strncmp(argv[arg], devLoadGamePrefix, devLoadGamePrefixLength) == 0) {
+            int slot;
+            if (mainTryParseDevLoadGameSlot(argv[arg] + devLoadGamePrefixLength, &slot)) {
+                commandLineDevLoadGameSlot = slot;
+            } else {
+                debugPrint("MAIN: invalid --dev-load-game value '%s'\n", argv[arg] + devLoadGamePrefixLength);
+            }
+        } else if (strcmp(argv[arg], "--dev-new-game") == 0) {
+            commandLineDevNewGame = true;
+        } else if (strncmp(argv[arg], "--dev-map=", 10) == 0) {
+            commandLineDevMap = argv[arg] + 10;
+        } else if (strncmp(argv[arg], "--dev-autotest-scenario=", 24) == 0) {
+            devAutotestSetScenario(argv[arg] + 24);
+        } else if (strncmp(argv[arg], "--dev-autotest=", 15) == 0) {
+            devAutotestInit(argv[arg] + 15);
+        } else if (strcmp(argv[arg], "--dev-endgame") == 0) {
+            commandLineDevEndgame = true;
+        } else if (strcmp(argv[arg], "--dev-endgame-movie") == 0) {
+            commandLineDevEndgameMovie = true;
+        }
+    }
+}
+
+static bool mainTryParseDevLoadGameSlot(const char* value, int* slotPtr)
+{
+    if (value == nullptr || slotPtr == nullptr) {
+        return false;
+    }
+
+    char* end = nullptr;
+    long slotNumber = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || slotNumber < 1 || slotNumber > lsgGetTotalSlotCount()) {
+        return false;
+    }
+
+    *slotPtr = static_cast<int>(slotNumber - 1);
+    return true;
+}
+
+static void mainHandleDevEndgameRequests()
+{
+    if (commandLineDevEndgame && commandLineDevEndgameMovie) {
+        commandLineDevEndgame = false;
+        commandLineDevEndgameMovie = false;
+        endgamePlaySlideshow();
+        endgamePlayMovie();
+        return;
+    }
+
+    mainRequestDevEndgameIfNeeded();
+    mainRunDevEndgameMovieIfNeeded();
+}
+
+static void mainRequestDevEndgameIfNeeded()
+{
+    if (!commandLineDevEndgame) {
+        return;
+    }
+
+    commandLineDevEndgame = false;
+    scriptsRequestEndgame();
+}
+
+static void mainRunDevEndgameMovieIfNeeded()
+{
+    if (!commandLineDevEndgameMovie) {
+        return;
+    }
+
+    commandLineDevEndgameMovie = false;
+    endgamePlayMovie();
+}
+
+// NOTE: Inlined.
+//
+// 0x480D0C
+static int main_reset_system()
+{
+    gameReset();
+
+    return 1;
+}
+
+// NOTE: Inlined.
+//
+// 0x480D18
+static void main_exit_system()
+{
+    backgroundSoundDelete();
+
+    gameExit();
+}
+
+// CE: Black over everything while a game loads (the load screen shows over
+// it): under the mobile UI its own screen, not a window of the game.
+static int mainCurtainShow()
+{
+    if (muiIsEnabled()) {
+        muiCurtainShow();
+        return -1;
+    }
+
+    int win = windowCreate(0, 0, screenGetWidth(), screenGetHeight(), COLOR_BLACK, WINDOW_MODAL | WINDOW_MOVE_ON_TOP);
+    if (win != -1) {
+        windowRefresh(win);
+    }
+    return win;
+}
+
+static void mainCurtainHide(int win)
+{
+    if (muiIsEnabled()) {
+        muiCurtainHide();
+    } else if (win != -1) {
+        windowDestroy(win);
+    }
+}
+
+// 0x480D4C
+static int _main_load_new(char* mapFileName)
+{
+    _game_user_wants_to_quit = GAME_QUIT_REQUEST_NONE;
+    _main_show_death_scene = 0;
+    gDude->flags &= ~OBJECT_FLAT;
+    objectShow(gDude, nullptr);
+    mouseHideCursor();
+
+    int win = mainCurtainShow();
+
+    colorPaletteLoad("color.pal");
+    paletteFadeTo(_cmap);
+    mapInit();
+    gameMouseSetCursor(MOUSE_CURSOR_NONE);
+    mouseShowCursor();
+    mapLoadByName(mapFileName);
+
+    // SFALL: Fix the starting position of the player's marker on the world map
+    // when starting a new game with a custom starting map.
+    City areaIdx;
+    if (wmMatchAreaContainingMapIdx(gMapHeader.index, &areaIdx) == 0) {
+        if (wmStartWorldPosIsConfigured()) {
+            wmSetPartyCurArea(areaIdx);
+            wmClearPartyWalking();
+        } else {
+            wmTeleportToArea(areaIdx);
+        }
+    }
+
+    wmMapMusicStart();
+    paletteFadeTo(gPaletteWhite);
+    mainCurtainHide(win);
+    colorPaletteLoad("color.pal");
+    paletteFadeTo(_cmap);
+    actionLogState("new game");
+    return 0;
+}
+
+// NOTE: Inlined.
+//
+// 0x480DF8
+static int main_loadgame_new()
+{
+    _game_user_wants_to_quit = GAME_QUIT_REQUEST_NONE;
+    _main_show_death_scene = 0;
+
+    gDude->flags &= ~OBJECT_FLAT;
+
+    objectShow(gDude, nullptr);
+    mouseHideCursor();
+
+    mapInit();
+
+    gameMouseSetCursor(MOUSE_CURSOR_NONE);
+    mouseShowCursor();
+
+    return 0;
+}
+
+// 0x480E34
+static void main_unload_new()
+{
+    objectHide(gDude, nullptr);
+    mapExit();
+}
+
+// 0x480E48
+static void mainLoop()
+{
+    bool cursorWasHidden = cursorIsHidden();
+    if (cursorWasHidden) {
+        mouseShowCursor();
+    }
+
+    _main_game_paused = 0;
+
+    scriptsEnable();
+    gMainLoopRunning = true;
+
+    while (_game_user_wants_to_quit == GAME_QUIT_REQUEST_NONE) {
+        sharedFpsLimiter.mark();
+
+        int keyCode = inputGetInput();
+
+        // SFALL: MainLoopHook.
+        sfall_gl_scr_process_main();
+
+        gameHandleKey(keyCode, false);
+
+        // CE: Commands of the touch HUD and the mobile screens.
+        GameCommand command;
+        if (gameCommandTake(&command)) {
+            gameCommandExecute(command, false);
+        }
+
+        devAutotestTick();
+
+        scriptsHandleRequests();
+
+        mapHandleTransition();
+
+        if (_main_game_paused != 0) {
+            _main_game_paused = 0;
+        }
+
+        if ((gDude->data.critter.combat.results & (DAM_DEAD | DAM_KNOCKED_OUT)) != 0) {
+            endgameSetupDeathEnding(ENDGAME_DEATH_ENDING_REASON_DEATH);
+            _main_show_death_scene = 1;
+            _game_user_wants_to_quit = GAME_QUIT_REQUEST_MAIN_MENU;
+        }
+
+        renderFpsCounter();
+        renderPresent();
+        sharedFpsLimiter.throttle();
+    }
+
+    gMainLoopRunning = false;
+    scriptsDisable();
+
+    if (cursorWasHidden) {
+        mouseHideCursor();
+    }
+}
+
+static void mainRunGameLoopAndCleanup()
+{
+    mainHandleDevEndgameRequests();
+    mainLoop();
+    paletteFadeTo(gPaletteWhite);
+
+    // NOTE: Uninline.
+    main_unload_new();
+
+    // NOTE: Uninline.
+    main_reset_system();
+
+    if (_main_show_death_scene != 0) {
+        showDeath();
+        _main_show_death_scene = 0;
+    }
+}
+
+// 0x48118C
+static void showDeath()
+{
+    artCacheFlush();
+    colorCycleDisable();
+    gameMouseSetCursor(MOUSE_CURSOR_NONE);
+
+    bool oldCursorIsHidden = cursorIsHidden();
+    if (oldCursorIsHidden) {
+        mouseShowCursor();
+    }
+
+    int screenWidth = screenGetWidth();
+    int screenHeight = screenGetHeight();
+    int deathWindowX = 0;
+    int deathWindowY = 0;
+    // CE: Mobile UI: the picture and the subtitle show in its scene screen.
+    bool mobile = muiIsEnabled();
+    int win = mobile ? -1 : windowCreate(deathWindowX, deathWindowY, screenWidth, screenHeight, COLOR_FIRST, WINDOW_MOVE_ON_TOP);
+    if (win != -1 || mobile) {
+        do {
+            unsigned char* windowBuffer = mobile ? nullptr : windowGetBuffer(win);
+            if (!mobile && windowBuffer == nullptr) {
+                break;
+            }
+
+            FrmImage backgroundFrmImage;
+            if (!backgroundFrmImage.lock(InterfaceFrameId::DeathScene)) {
+                break;
+            }
+
+            while (mouseGetEvent() != 0) {
+                sharedFpsLimiter.mark();
+
+                inputGetInput();
+
+                renderPresent();
+                sharedFpsLimiter.throttle();
+            }
+
+            keyboardReset();
+            inputEventQueueReset();
+
+            colorPaletteLoad("art\\intrface\\death.pal");
+
+            const char* deathFileName = endgameDeathEndingGetFileName();
+
+            if (mobile) {
+                muiSceneShow();
+                muiSceneSetPicture(InterfaceFrameId::DeathScene);
+                char text[512];
+                if (settings.preferences.subtitles && _mainDeathGrabTextFile(deathFileName, text) == 0) {
+                    _mainDeathRemoveTimings(text);
+                    const char* start = text;
+                    while (*start == ' ') {
+                        start++;
+                    }
+                    muiSceneSetSubtitle(start);
+                }
+            } else {
+                Rect deathFrameBounds = blitBuffer2DCenteredAspectFit(backgroundFrmImage.getBuffer(),
+                    Buffer2D(windowBuffer, screenWidth, screenHeight),
+                    COLOR_BLACK,
+                    settings.ui.death_screen_size != 0);
+
+                if (settings.preferences.subtitles) {
+                    char text[512];
+                    if (_mainDeathGrabTextFile(deathFileName, text) == 0) {
+                        debugPrint("\n((ShowDeath)): %s\n", text);
+
+                        short beginnings[WORD_WRAP_MAX_COUNT];
+                        short count;
+                        int deathFrameWidth = rectGetWidth(&deathFrameBounds);
+                        int deathFrameHeight = rectGetHeight(&deathFrameBounds);
+                        int textMaxWidth = std::min(560, deathFrameWidth - 80);
+                        if (textMaxWidth > 0 && _mainDeathWordWrap(text, textMaxWidth, beginnings, &count) == 0) {
+                            int textHeight = fontGetLineHeight() * count;
+                            int y = std::max(deathFrameBounds.top, deathFrameBounds.top + deathFrameHeight - textHeight - 8);
+                            int x = std::max(2, deathFrameBounds.left + (deathFrameWidth - textMaxWidth) / 2);
+                            bufferFill(windowBuffer + screenWidth * y + x - 2, textMaxWidth + 4, textHeight + 2, screenWidth, COLOR_FIRST);
+                            unsigned char* p = windowBuffer + screenWidth * y + x;
+                            for (int index = 0; index < count; index++) {
+                                fontDrawText(p, text + beginnings[index], textMaxWidth, screenWidth, COLOR_WHITE);
+                                p += screenWidth * fontGetLineHeight();
+                            }
+                        }
+                    }
+                }
+
+                windowRefresh(win);
+            }
+
+            paletteFadeTo(_cmap);
+
+            _main_death_voiceover_done = false;
+            speechSetEndCallback(_main_death_voiceover_callback);
+
+            unsigned int delay;
+            if (speechLoad(deathFileName, GSOUND_LOAD_NO_PLAY, GSOUND_STREAM, GSOUND_NO_LOOP) == -1) {
+                delay = 3000;
+            } else {
+                delay = UINT_MAX;
+            }
+
+            _gsound_speech_play_preloaded();
+
+            // SFALL: Fix the playback of the speech sound file for the death
+            // screen.
+            inputBlockForTocks(100);
+
+            unsigned int time = getTicks();
+            int keyCode;
+            do {
+                sharedFpsLimiter.mark();
+
+                devAutotestTick();
+
+                keyCode = inputGetInput();
+                // A tap on the scene screen, as a key.
+                if (keyCode == -1 && mobile && muiSceneTakeTap()) {
+                    keyCode = KEY_ESCAPE;
+                }
+
+                renderPresent();
+                sharedFpsLimiter.throttle();
+            } while (keyCode == -1 && !_main_death_voiceover_done && getTicksSince(time) < delay);
+
+            speechSetEndCallback(nullptr);
+
+            speechDelete();
+
+            while (mouseGetEvent() != 0) {
+                sharedFpsLimiter.mark();
+
+                inputGetInput();
+
+                renderPresent();
+                sharedFpsLimiter.throttle();
+            }
+
+            if (keyCode == -1) {
+                inputPauseForTocks(500);
+            }
+
+            paletteFadeTo(gPaletteBlack);
+            colorPaletteLoad("color.pal");
+        } while (0);
+        if (mobile) {
+            muiSceneHide();
+        } else {
+            windowDestroy(win);
+        }
+    }
+
+    if (oldCursorIsHidden) {
+        mouseHideCursor();
+    }
+
+    gameMouseSetCursor(MOUSE_CURSOR_ARROW);
+
+    colorCycleEnable();
+}
+
+// 0x4814A8
+static void _main_death_voiceover_callback()
+{
+    _main_death_voiceover_done = true;
+}
+
+// Read endgame subtitle.
+//
+// 0x4814B4
+static int _mainDeathGrabTextFile(const char* fileName, char* dest)
+{
+    const char* p = strrchr(fileName, '\\');
+    if (p == nullptr) {
+        return -1;
+    }
+
+    char path[COMPAT_MAX_PATH];
+    snprintf(path, sizeof(path), "text\\%s\\cuts\\%s%s", settings.system.language.c_str(), p + 1, ".TXT");
+
+    File* stream = fileOpen(path, "rt");
+    if (stream == nullptr) {
+        return -1;
+    }
+
+    while (true) {
+        int c = fileReadChar(stream);
+        if (c == -1) {
+            break;
+        }
+
+        if (c == '\n') {
+            c = ' ';
+        }
+
+        *dest++ = (c & 0xFF);
+    }
+
+    fileClose(stream);
+
+    *dest = '\0';
+
+    return 0;
+}
+
+// 0x481598
+// Blanks the text's timings ("1:" before each part).
+static void _mainDeathRemoveTimings(char* text)
+{
+    while (true) {
+        char* sep = strchr(text, ':');
+        if (sep == nullptr) {
+            break;
+        }
+
+        if (sep - 1 < text) {
+            break;
+        }
+        sep[0] = ' ';
+        sep[-1] = ' ';
+    }
+}
+
+static int _mainDeathWordWrap(char* text, int width, short* beginnings, short* count)
+{
+    _mainDeathRemoveTimings(text);
+
+    if (wordWrap(text, width, beginnings, count) == -1) {
+        return -1;
+    }
+
+    // TODO: Probably wrong.
+    *count -= 1;
+
+    for (int index = 1; index < *count; index++) {
+        char* p = text + beginnings[index];
+        while (p >= text && *p != ' ') {
+            p--;
+            beginnings[index]--;
+        }
+
+        if (p != nullptr) {
+            *p = '\0';
+            beginnings[index]++;
+        }
+    }
+
+    return 0;
+}
+
+} // namespace fallout

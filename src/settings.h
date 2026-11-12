@@ -1,0 +1,459 @@
+#ifndef FALLOUT_SETTINGS_H_
+#define FALLOUT_SETTINGS_H_
+
+#include <optional>
+#include <string>
+#include <variant>
+#include <vector>
+
+#include "character_editor.h"
+#include "game_config.h"
+#include "svga.h"
+
+namespace fallout {
+
+enum class SettingValueType {
+    Boolean,
+    Integer,
+    Real,
+    Text,
+    Choice,
+    KeyBinding,
+};
+
+// WIP
+enum class SettingCategory {
+    Uncategorized,
+    System,
+    Screen,
+    Interface,
+    Gameplay,
+    Preferences,
+    Audio,
+    Debug,
+    CombatAi,
+    QualityOfLife,
+    Mapper,
+};
+
+enum class SettingApplyPolicy {
+    OnClose,
+    NextGame,
+    Restart,
+};
+
+using SettingValue = std::variant<bool, int, double, std::string>;
+
+struct SettingChoice {
+    int value;
+    std::string fallbackLabel;
+};
+
+struct SettingDescriptor {
+    std::string id;
+    std::string source = "fallout2.cfg";
+    std::string section;
+    std::string key;
+    SettingValueType valueType = SettingValueType::Boolean;
+    SettingCategory category = SettingCategory::Uncategorized;
+    SettingApplyPolicy applyPolicy = SettingApplyPolicy::Restart;
+    SettingValue defaultValue;
+    bool readOnly = false;
+    bool sensitive = false;
+    bool applicable = true;
+    bool commandLineOverride = false;
+    int categoryOrder = 0;
+    std::string subsection;
+    int labelMessageId = -1;
+    int descriptionMessageId = -1;
+    std::string fallbackLabel;
+    std::string fallbackDescription;
+    std::string asset;
+    std::vector<SettingChoice> choices;
+    std::optional<SettingValue> vanillaValue;
+};
+
+struct SystemSettings {
+    std::string executable = "game";
+    std::string master_dat_path = "master.dat";
+    std::string master_patches_path = "data";
+    std::string saves_root;
+    std::string f2_res_dat_path = "f2_res.dat";
+    std::string critter_dat_path = "critter.dat";
+    std::string critter_patches_path = "data";
+    std::string language = ENGLISH;
+    int scroll_lock = 0;
+    bool interrupt_walk = true;
+    int art_cache_size = 32;
+    bool color_cycling = true;
+    int cycle_speed_factor = 1;
+    bool hashing = true;
+    int splash = 0;
+    int free_space = 20480;
+    int times_run = 0;
+    std::string screenshots_format = "png";
+
+    bool executableIsMapper() const;
+};
+
+struct ScreenSettings {
+    int resolution_x = 640;
+    int resolution_y = 480;
+    WindowMode windowed = WindowMode::Fullscreen;
+    bool mouse_lock = false;
+    int scale = 1;
+};
+
+struct UISettings {
+    // Main menu background scaling mode.
+    // 0 - native size
+    // 1 - aspect-fit background only
+    // 2 - aspect-fit background and scale controls to match
+    int main_menu_scale_mode = 1;
+
+    // Show the Help option in the in-game options menu.
+    bool in_game_menu_help = true;
+
+    // Whether to keep the main menu visible behind 640x480 main-menu subwindows
+    // like load, options, and new game when the effective menu background is larger.
+    bool main_menu_overlay_subscreens = false;
+
+    // Should the game window stretch all the way to the bottom or sit at the top of the interface bar (default).
+    bool iface_bar_mode = false;
+
+    // This will increase the width of the interface bar expanding the area used to display text.
+    int iface_bar_width = 800;
+
+    // 0 - Black, No Iface-bar side art used.
+    // 1 - Metal look Iface-bar side art used.
+    // 2 - Leather look Iface-bar side art used.
+    int iface_bar_side_art = 2;
+
+    // Iface-bar side graphics extend from the Screen edges to the Iface-Bar if true (otherwise from bar to edges).
+    bool iface_bar_sides_ori = false;
+
+    // Draw progress bar for perk ranks.
+    bool perks_progress_bar = false;
+
+    // 0 - vanilla ammo lights, 1 - alternate ammo meter with burst segments, 2 - also segment low-capacity single-shot weapons.
+    int alternate_ammo_meter = 0;
+
+    // Extends AP bar to 16 dots instead of 10.
+    bool extend_ap_bar = false;
+
+    // Expands barter/trade window vertically, adding a 4th item slot per side.
+    bool expand_barter_window = false;
+
+    // Scales the splash screen to fit the screen
+    int splash_screen_size = 1;
+
+    // Scales the death screen to fit the screen while preserving aspect ratio.
+    int death_screen_size = 1;
+
+    // Scales endgame slideshow images to fit the screen.
+    int end_slide_size = 1;
+
+    // Whether to scale movies to fit the screen while preserving aspect ratio.
+    bool movie_aspect_fit = true;
+
+    // Whether to load EDG files (HRP format) when loading maps. If loaded, they override default edge clipping and scroll blocking behavior.
+    bool edg_support = true;
+
+    // Disables the player-centered map scroll limit.
+    bool ignore_scroll_limit = false;
+
+    // Disables map edges, including vanilla scroll blockers and CE hi-res stencil.
+    bool ignore_map_edges = false;
+
+    // iOS quick-actions toolbar above the interface bar. No-op on other platforms.
+    bool quick_toolbar_visible = false;
+
+    // TODO: add to setting window
+    // Speed of various UI transition animations. 1.0 represents vanilla speeds.
+    double anim_speed = 1.0;
+
+    int skip_opening_movies = 0;
+    bool display_karma_changes = false;
+    bool display_bonus_damage = false;
+    bool numbers_in_dialogue = false;
+    bool party_member_extra_info = false;
+
+    // Whether to use high resolution art for dialog borders.
+    bool dialog_border = true;
+    // Number of pages reserved for quick saves (free first, then oldest),
+    // starting at `auto_quick_save_page` (sfall AutoQuickSave,
+    // AutoQuickSavePage).
+    int auto_quick_save = 0;
+    int auto_quick_save_page = 1;
+    bool enable_high_resolution_stencil = true;
+    // Maximum number of columns in inventory and loot windows
+    int inventory_columns = 1;
+
+    // 0 - No indicator, vanilla
+    // 1 - Simple indicator
+    // 2 - Detailed indicator, works with inventory_columns > 1 only
+    // 3 - Size indicator for containers
+    int loot_weight_indicator = 1;
+
+    // 0   - Container indicator is always visible
+    // XX  - Container indicator is visible when size reaches XX percent
+    // 100 - Container indicator is visible when fully loaded
+    int loot_container_size_indicator_threshold = 50;
+};
+
+// These are settings handled by preferences UI and saved in save games.
+struct GameplaySettings {
+    PerkCarryOverMode perk_carryover = PERK_CARRY_OVER_MODE_ON;
+};
+
+struct PreferencesSettings {
+    GameDifficulty game_difficulty = GAME_DIFFICULTY_NORMAL;
+    CombatDifficulty combat_difficulty = COMBAT_DIFFICULTY_NORMAL;
+    ViolenceLevel violence_level = VIOLENCE_LEVEL_MAXIMUM_BLOOD;
+    TargetHighlight target_highlight = TARGET_HIGHLIGHT_TARGETING_ONLY;
+    bool item_highlight = true;
+    bool combat_looks = false;
+    bool combat_messages = true;
+    bool combat_taunts = true;
+    bool language_filter = false;
+    bool running = false;
+    bool subtitles = false;
+    int combat_speed = 0;
+    bool player_speedup = false;
+    double text_base_delay = 3.5;
+    double text_line_delay = 1.399994;
+    double brightness = 1.0;
+    double mouse_sensitivity = 1.0;
+    bool running_burning_guy = true;
+};
+
+struct SoundSettings {
+    bool initialize = true;
+    bool debug = false;
+    bool debug_sfxc = true;
+    bool sounds = true;
+    bool music = true;
+    bool speech = true;
+    // Voiced floats and Pip-Boy lines, only when [speech] is on too.
+    bool float_speech = true;
+    bool pipboy_speech = true;
+    int master_volume = 22281;
+    int music_volume = 22281;
+    int sndfx_volume = 22281;
+    int speech_volume = 22281;
+    // TODO: Separate volumes for voiced floats and Pip-Boy lines, once they
+    // have a place in the preferences screen. Both use speech_volume for now.
+    // int float_volume = 22281;
+    // int pipboy_volume = 22281;
+    int cache_size = 448;
+    std::string music_path1 = "sound\\music\\";
+    std::string music_path2 = "sound\\music\\";
+    int gapless_music = 1;
+    // Audio channel pools, see audio_channels.h for limits.
+    int music_channels = 1;
+    int speech_channels = 1;
+    int sfx_channels = 4;
+    int movie_channels = 1;
+    int script_channels = 4;
+    int float_channels = 4;
+    int pipboy_channels = 1;
+};
+
+struct DebugSettings {
+    std::string mode = "environment";
+    bool show_fps = false;
+    // CE: Once a second appends frame timings to perf.log (see
+    // `perf_monitor.h`).
+    bool perf_log = false;
+    // CE: Keeps the latest touches in memory and writes them to touch.log
+    // when touches go wrong (see `touch_log.h`). Always on in the
+    // touch-only build (settings.cc).
+    bool touch_log = false;
+    // CE: Writes what the player did and what the game made of it to
+    // actions.log (see `action_log.h`). Always on in the touch-only build
+    // (settings.cc).
+    bool action_log = false;
+    bool show_tile_num = false;
+    bool show_script_messages = false;
+    bool show_load_info = false;
+    bool output_map_data_info = false;
+    int window_width = 300;
+    int window_height = 192;
+    std::string console_output_path;
+};
+
+struct CombatAiSettings {
+    // Sfall NPCsTryToSpendExtraAP: minimum remaining AP for an AI retry; 0 disables.
+    int npcs_try_to_spend_extra_ap = 0;
+};
+
+struct QolSettings {
+    int use_walk_distance = 3;
+    bool walk_when_sneaking = false;
+    bool auto_open_doors = false;
+    bool party_trade_from_menu = true;
+    bool party_loot_and_barter = false;
+    bool fast_ammo_load = true;
+};
+
+// CE: Improvements of this port that Fallout 2 CE and its mods don't have:
+// they keep the game's rules and data, only make playing better. Each can be
+// turned off (`[enhancements]`, rows of the settings screen).
+struct EnhancementSettings {
+    // The combat speed preference speeds up every combat animation, not only
+    // walking: running as walking, attacks, reloads, hits, falls and deaths
+    // up to twice as fast, their sounds as fast at the same pitch (see
+    // `animationGetCombatSpeedFactor`).
+    bool combat_speed_all_animations = true;
+    // Mobile main menu: Continue loads the save made last.
+    bool main_menu_continue = true;
+    // Mobile world map: the camera goes with the travelling party (until the
+    // map is moved by a finger).
+    bool worldmap_follow_party = true;
+    // Saves made with other game files or mods are marked on the save
+    // screen, loading one likely to fail asks first (save_compatibility.h).
+    bool save_compatibility = true;
+    bool auto_quicksave_on_suspend = true;
+    // Touch controls: the combat's tactical view button (tactical_view.h);
+    // whether the view is on is [touch] tactical_view.
+    bool tactical_view = true;
+};
+
+// CE: Zoomable map view, see world_view.h.
+struct WorldViewSettings {
+    bool enabled = true;
+    // Initial zoom, 1.0 means one map pixel per screen pixel.
+    double zoom = 1.0;
+    double zoom_min = 0.5;
+    double zoom_max = 4.0;
+    // 0 - nearest, 1 - bilinear, 2 - sharp bilinear.
+    int filter = 2;
+};
+
+// CE: Touch-first controls on the map, see touch_controls.h.
+struct TouchSettings {
+#ifdef __ANDROID__
+    bool controls = true;
+    // Touch HUD instead of the original interface bar, see touch_hud.h.
+    bool hud = true;
+    // Mobile UI screens instead of the original ones, see mui.h.
+    bool mobile_ui = true;
+#else
+    bool controls = false;
+    bool hud = false;
+    bool mobile_ui = false;
+#endif
+    // HUD size in percent of the default (buttons are sized in dp).
+    int hud_scale = 100;
+    // Screen density (Android dp scale). 0 - detect (Android), 1.0 elsewhere.
+    double hud_density = 0.0;
+    // Combat's tactical view (its HUD button), kept until switched again.
+    bool tactical_view = false;
+    // Dual-screen devices (AYN Thor): the bottom screen shows the dashboard
+    // and the game's screens, see mui.h `muiBottomActive`.
+    bool dual_screen = true;
+    // Tap live / local maps to walk and the world map to travel.
+    bool map_tap_move = true;
+    // Bottom-screen dashboard and screen navigation (0 keeps the classic layout).
+    int dashboard_layout = 0;
+    int screen_nav = 0;
+    // Dialogue and barter on the bottom screen (QOL stage 2). Applied only
+    // while the bottom screen is in use, a single screen keeps the top layouts.
+    // dialogue_layout: 0 top, 1 split (head and reply on top, options on the
+    // bottom), 2 split with the options mirrored dimmed on top.
+    int dialogue_layout = 1;
+    // 0 normal (16 dp), 1 large (20 dp).
+    int dialogue_option_size = 0;
+    // 0 top, 1 bottom.
+    int barter_layout = 1;
+    // A tap on the reply skips its typing / speech.
+    bool dialogue_tap_skip = false;
+    // Ask before an offer that is clearly lossy.
+    bool barter_confirm = false;
+    // Gamepad (QOL stage 3): d-pad / stick focus in screens, the map cursor.
+    bool gamepad_ui = true;
+    // "button=action" pairs over the defaults (docs/gamepad-stage3.md).
+    std::string gamepad_bindings;
+    // Mouse-style controls (docs/mouse-controls.md). The right stick moves the
+    // map cursor, A / R3 (tap) click, B / R3 (held) right click.
+    bool pad_cursor = true;
+    // Held R3 this long (ms) is a right click.
+    int pad_r3_hold_ms = 400;
+    // A cursor shows where the finger is on the top screen.
+    bool touch_cursor = true;
+    // Two fingers tapped together are a right click (the action menu).
+    bool two_finger_click = true;
+    // Touch & hold this long (ms) is a right click; 0 - the system's delay.
+    int touch_hold_ms = 0;
+    // Cursor speed (stick and touchpad), percent.
+    int cursor_speed = 100;
+    // Bottom-screen look: 0 - Fallout (the game's own art and fonts), 1 - classic (drawn from code), 2 - Pip-Boy 2000.
+    int bottom_theme = 2;
+    bool reduce_motion = false;
+    std::string perf_mode = "balanced"; // balanced: 60 Hz; saver: 30 Hz.
+    int bottom_dim_seconds = 60; // 0 disables idle dimming.
+    int bottom_text_size = 100; // Percent of the bottom screen game fonts.
+    bool colour_blind_safe = false;
+    bool top_scanlines = false;
+    // Combat panel on the bottom screen in combat (enemies, aimed shots).
+    bool combat_panel = true;
+    // Quick-use hotbar (dashboard and combat panel), its slots: item prototype
+    // ids separated by commas, -1 - empty.
+    bool hotbar = true;
+    std::string hotbar_slots;
+};
+
+struct MapperSettings {
+    bool override_librarian = false;
+    bool librarian = false;
+    bool use_art_not_protos = false;
+    bool rebuild_protos = false;
+    bool fix_map_objects = false;
+    bool fix_map_inventory = false;
+    bool ignore_rebuild_errors = false;
+    bool show_pid_numbers = false;
+    bool save_text_maps = false;
+    bool run_mapper_as_game = false;
+    bool default_f8_as_game = true;
+    bool sort_script_list = false;
+    std::string map;
+    // CE: switch between vanilla grid item picker and simpler list-based one.
+    bool use_grid_item_picker = true;
+    // CE: change mapper path for saving various data.
+    std::string dev_path;
+};
+
+struct Settings {
+    SystemSettings system;
+    ScreenSettings screen;
+    UISettings ui;
+    GameplaySettings gameplay;
+    PreferencesSettings preferences;
+    SoundSettings sound;
+    DebugSettings debug;
+    CombatAiSettings combat_ai;
+    QolSettings qol;
+    EnhancementSettings enhancements;
+    WorldViewSettings world_view;
+    TouchSettings touch;
+    MapperSettings mapper;
+};
+
+extern Settings settings;
+
+bool settingsInit(bool isMapper, int argc, char** argv);
+bool settingsSave();
+void settingsWriteToConfig(bool onlyAdd = false);
+bool settingsExit(bool shouldSave);
+void settingsMarkCommandLineOverride(const char* section, const char* key);
+const std::vector<SettingDescriptor>& settingsGetDescriptors();
+SettingValue settingsGetValue(const SettingDescriptor& descriptor);
+// Includes committed restart-required edits without changing the active runtime value.
+SettingValue settingsGetConfiguredValue(const SettingDescriptor& descriptor);
+bool settingsValidateValue(const SettingDescriptor& descriptor, const SettingValue& value, std::string* error = nullptr);
+// Honors applyPolicy. NextGame is rejected until a game lifecycle apply path exists.
+bool settingsSetValue(const SettingDescriptor& descriptor, const SettingValue& value, std::string* error = nullptr);
+
+} // namespace fallout
+
+#endif /* FALLOUT_SETTINGS_H_ */

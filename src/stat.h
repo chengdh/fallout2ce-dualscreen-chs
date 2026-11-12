@@ -1,0 +1,58 @@
+#ifndef STAT_H
+#define STAT_H
+
+#include "art.h"
+#include "db.h"
+#include "obj_types.h"
+#include "proto_types.h"
+#include "stat_defs.h"
+
+namespace fallout {
+
+#define STAT_ERR_INVALID_STAT (-5)
+
+int statsInit();
+int statsReset();
+int statsExit();
+int statsLoad(File* stream);
+int statsSave(File* stream);
+void statResetUnspentApBonuses();
+void statSetUnspentApBonus(int multiplier);
+int statGetUnspentApBonus();
+void statSetUnspentApPerkBonus(int multiplier);
+int statGetUnspentApPerkBonus();
+int statGetConfiguredMaximum(Stat stat, bool npc);
+int statGetConfiguredMinimum(Stat stat, bool npc);
+void statSetPcMaximum(Stat stat, int maximum);
+void statSetPcMinimum(Stat stat, int minimum);
+void statSetNpcMaximum(Stat stat, int maximum);
+void statSetNpcMinimum(Stat stat, int minimum);
+int critterGetStat(Object* critter, Stat stat);
+int critterGetBaseStatWithTraitModifier(Object* critter, Stat stat);
+int critterGetBaseStat(Object* critter, Stat stat);
+int critterGetBonusStat(Object* critter, Stat stat);
+int critterSetBaseStat(Object* critter, Stat stat, int value);
+int critterIncBaseStat(Object* critter, Stat stat);
+int critterDecBaseStat(Object* critter, Stat stat);
+int critterSetBonusStat(Object* critter, Stat stat, int value);
+void protoCritterDataResetStats(CritterProtoData* data);
+void critterUpdateDerivedStats(Object* critter);
+char* statGetName(Stat stat);
+char* statGetDescription(Stat stat);
+char* statGetValueDescription(int value);
+int pcGetStat(PcStat pcStat);
+int pcSetStat(PcStat pcStat, int value);
+void pcStatsReset();
+int pcGetExperienceForNextLevel();
+int pcGetExperienceForLevel(int level);
+char* pcStatGetName(PcStat pcStat);
+char* pcStatGetDescription(PcStat pcStat);
+SkillDexFrmId statGetFrmId(Stat stat);
+int statRoll(Object* critter, Stat stat, int modifier, int* howMuch);
+int pcAddExperience(int xp, int* xpGained = nullptr);
+int pcAddExperienceWithOptions(int xp, bool doParty, int* xpGained = nullptr);
+int pcSetExperience(int xp);
+
+} // namespace fallout
+
+#endif /* STAT_H */
