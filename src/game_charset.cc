@@ -6,6 +6,7 @@
 
 #include <SDL.h>
 
+#include "chs_font_manager.h"
 #include "debug.h"
 #include "font_manager.h"
 #include "platform_compat.h"
@@ -811,6 +812,7 @@ namespace {
         Latin,
         Cyrillic,
         Greek,
+        Chinese,
     };
 
     struct Charset {
@@ -825,6 +827,9 @@ namespace {
     const Charset kGreek = { "windows-1253", kCp1253, Alphabet::Greek };
     const Charset kTurkish = { "windows-1254", kCp1254, Alphabet::Latin };
     const Charset kBaltic = { "windows-1257", kCp1257, Alphabet::Latin };
+    // CE/CHS: no single-byte table - decoding goes through the GBK/UTF-8
+    // helpers in chs_font_manager.cc instead.
+    const Charset kChinese = { "GBK", nullptr, Alphabet::Chinese };
 
     // Languages by the game's name of them (`[system] language`, the folder
     // in `text`) and the device's (ISO 639-1); those not here are Western.
@@ -854,6 +859,8 @@ namespace {
         { "lithuanian", "lt", &kBaltic },
         { "latvian", "lv", &kBaltic },
         { "estonian", "et", &kBaltic },
+        { "chinese", "zh", &kChinese },
+        { "chs", "zh", &kChinese },
     };
 
     // Letters of an alphabet drawn as Latin ones in its fonts (by the
@@ -1012,6 +1019,16 @@ namespace {
 
 void gameCharsetInit()
 {
+    // CE/CHS: the Chinese TrueType font manager owns decoding in this mode;
+    // the AAF glyph heuristics below only apply to single-byte translations.
+    if (chsFontsActive()) {
+        gCharset = &kChinese;
+        gTextsInLanguage = true;
+        gUiLanguage = "chinese";
+        debugPrint("Game texts: GBK/UTF-8 (Chinese font manager), mobile UI in %s\n", gUiLanguage.c_str());
+        return;
+    }
+
     const char* language = settings.system.language.c_str();
     const Charset* named = charsetOfLanguage(language);
     Alphabet drawn = fontsAlphabet();
@@ -1032,9 +1049,19 @@ void gameCharsetInit()
         gUiLanguage.c_str());
 }
 
+bool gameCharsetIsMultibyte()
+{
+    return current()->table == nullptr;
+}
+
 char32_t gameCharsetDecode(unsigned char ch)
 {
-    return ch < 0x80 ? ch : current()->table[ch - 0x80];
+    if (ch < 0x80) {
+        return ch;
+    }
+    // A multi-byte encoding cannot be decoded one byte at a time; callers
+    // should use gameCharsetDecodeString() instead.
+    return current()->table == nullptr ? 0xFFFD : current()->table[ch - 0x80];
 }
 
 unsigned char gameCharsetEncode(char32_t codepoint)
@@ -1044,6 +1071,9 @@ unsigned char gameCharsetEncode(char32_t codepoint)
     }
 
     const char16_t* table = current()->table;
+    if (table == nullptr) {
+        return 0;
+    }
     for (int index = 0; index < 0x80; index++) {
         if (table[index] == codepoint && codepoint != 0xFFFD) {
             return static_cast<unsigned char>(0x80 + index);
@@ -1055,6 +1085,38 @@ unsigned char gameCharsetEncode(char32_t codepoint)
 const char* gameCharsetName()
 {
     return current()->name;
+}
+
+std::u32string gameCharsetDecodeString(const char* text)
+{
+    if (text == nullptr) {
+        return std::u32string();
+    }
+    if (gameCharsetIsMultibyte()) {
+        return chsDecodeString(text);
+    }
+
+    std::u32string result;
+    for (const unsigned char* ch = reinterpret_cast<const unsigned char*>(text); *ch != '\0'; ch++) {
+        result.push_back(gameCharsetDecode(*ch));
+    }
+    return result;
+}
+
+std::string gameCharsetEncodeString(const std::u32string& text)
+{
+    if (gameCharsetIsMultibyte()) {
+        return chsEncodeString(text);
+    }
+
+    std::string result;
+    for (char32_t codepoint : text) {
+        unsigned char ch = gameCharsetEncode(codepoint);
+        if (ch != 0) {
+            result.push_back(static_cast<char>(ch));
+        }
+    }
+    return result;
 }
 
 const char* gameCharsetUiLanguage()

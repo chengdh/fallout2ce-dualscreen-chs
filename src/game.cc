@@ -12,6 +12,7 @@
 #include "automap.h"
 #include "character_editor.h"
 #include "character_selector.h"
+#include "chs_font_manager.h"
 #include "color.h"
 #include "combat.h"
 #include "combat_ai.h"
@@ -230,7 +231,13 @@ int gameInitWithOptions(const char* windowTitle, bool isMapper, int font, int fl
     }
 
     interfaceFontsInit();
-    fontManagerAdd(&gModernFontManager);
+
+    // CE/CHS: when a Chinese font pack is installed it takes over fonts
+    // 100..110. Only register the stock AAF manager when it did not, so the
+    // rest of the engine keeps using fontSetCurrent() as usual.
+    if (chsFontsInit() != 0) {
+        fontManagerAdd(&gModernFontManager);
+    }
     fontSetCurrent(font);
 
     // CE: Which characters the texts mean, by the fonts just loaded.
@@ -547,6 +554,7 @@ void gameExit()
     partyMembersExit();
     endgameDeathEndingExit();
     interfaceFontsExit();
+    chsFontsExit();
     windowClose();
     messageListRepositoryExit();
     dbCloseAll();

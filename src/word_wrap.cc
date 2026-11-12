@@ -8,8 +8,19 @@
 
 namespace fallout {
 
-// 0x4BC6F0 word_wrap
+// CE/CHS: the engine calls wordWrap() from a dozen places (dialogue options,
+// Pip-Boy, save/load, floating text, ...). Route it through the active font
+// manager so CJK text is wrapped on character boundaries instead of bytes.
 int wordWrap(const char* string, int width, short* breakpoints, short* breakpointsLengthPtr)
+{
+    if (fontWordWrap != nullptr) {
+        return fontWordWrap(string, width, breakpoints, breakpointsLengthPtr);
+    }
+    return legacyWordWrap(string, width, breakpoints, breakpointsLengthPtr);
+}
+
+// 0x4BC6F0 word_wrap
+int legacyWordWrap(const char* string, int width, short* breakpoints, short* breakpointsLengthPtr)
 {
     breakpoints[0] = 0;
     *breakpointsLengthPtr = 1;

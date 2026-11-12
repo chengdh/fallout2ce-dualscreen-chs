@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include "art.h"
+#include "chs_font_manager.h"
 #include "color.h"
 #include "db.h"
 #include "debug.h"
@@ -60,6 +61,19 @@ namespace {
         float lineHeight = 0.0f;
     };
 
+    // CE/CHS: CJK needs tens of thousands of glyphs, so pre-packing every
+    // codepoint into an atlas (as the Latin ranges above) is not an option on
+    // Android. Instead, codepoints outside the packed ranges are rasterized on
+    // demand into tiny textures and cached by (codepoint, pixel size).
+    struct DynamicGlyph {
+        SDL_Texture* texture = nullptr;
+        int width = 0;
+        int height = 0;
+        int xOffset = 0;
+        int yOffset = 0;
+        float advance = 0.0f;
+    };
+
     SDL_Renderer* gRenderer = nullptr;
 
     std::vector<unsigned char> gFontData;
@@ -69,8 +83,16 @@ namespace {
 
     // By pixel size.
     std::map<int, std::unique_ptr<FontAtlas>> gAtlases;
+    std::map<std::pair<char32_t, int>, DynamicGlyph> gDynamicGlyphs;
 
     std::vector<SDL_Rect> gClipStack;
+
+    // In Chinese mode the game-skin renderer uses AAF bitmap fonts that have
+    // no CJK glyphs, so always use the TrueType path.
+    bool useTtfText()
+    {
+        return !muiSkinFallout() || chsFontsActive();
+    }
 
     struct ArtTexture {
         SDL_Texture* texture = nullptr;
@@ -115,26 +137,89 @@ namespace {
             return false;
         }
 
-        File* stream = fileOpen(kFontPath, "rb");
-        if (stream == nullptr) {
-            debugPrint("MUI: can't open font %s\n", kFontPath);
-            gFontLoadFailed = true;
-            return false;
+        // CE/CHS: reuse the Chinese TTF loaded by the game font manager when
+        // available, so the bottom-screen UI can draw the same characters.
+        int chsSize = 0;
+        const unsigned char* chsData = chsFontData(&chsSize);
+        if (chsData != nullptr && chsSize > 0) {
+            gFontData.assign(chsData, chsData + chsSize);
+        } else {
+            File* stream = fileOpen(kFontPath, "rb");
+            if (stream == nullptr) {
+                debugPrint("MUI: can't open font %s\n", kFontPath);
+                gFontLoadFailed = true;
+                return false;
+            }
+
+            int size = fileGetSize(stream);
+            gFontData.resize(size);
+            size_t read = fileRead(gFontData.data(), 1, size, stream);
+            fileClose(stream);
+            if (static_cast<int>(read) != size) {
+                debugPrint("MUI: can't read font %s\n", kFontPath);
+                gFontLoadFailed = true;
+                return false;
+            }
         }
 
-        int size = fileGetSize(stream);
-        gFontData.resize(size);
-        size_t read = fileRead(gFontData.data(), 1, size, stream);
-        fileClose(stream);
-
-        if (static_cast<int>(read) != size || !stbtt_InitFont(&gFontInfo, gFontData.data(), stbtt_GetFontOffsetForIndex(gFontData.data(), 0))) {
-            debugPrint("MUI: can't read font %s\n", kFontPath);
+        if (gFontData.empty()
+            || !stbtt_InitFont(&gFontInfo, gFontData.data(), stbtt_GetFontOffsetForIndex(gFontData.data(), 0))) {
+            debugPrint("MUI: can't initialize font %s\n", kFontPath);
             gFontLoadFailed = true;
             return false;
         }
 
         gFontLoaded = true;
         return true;
+    }
+
+    DynamicGlyph* dynamicGlyphFor(char32_t codepoint, int pixelSize)
+    {
+        auto key = std::make_pair(codepoint, pixelSize);
+        auto found = gDynamicGlyphs.find(key);
+        if (found != gDynamicGlyphs.end()) {
+            return &(found->second);
+        }
+
+        if (!loadFont() || gRenderer == nullptr) {
+            return nullptr;
+        }
+
+        DynamicGlyph glyph;
+        float scale = stbtt_ScaleForPixelHeight(&gFontInfo, static_cast<float>(pixelSize));
+
+        int advance = 0;
+        int leftSideBearing = 0;
+        stbtt_GetCodepointHMetrics(&gFontInfo, static_cast<int>(codepoint), &advance, &leftSideBearing);
+        glyph.advance = advance * scale;
+
+        int x0 = 0;
+        int y0 = 0;
+        int x1 = 0;
+        int y1 = 0;
+        stbtt_GetCodepointBitmapBox(&gFontInfo, static_cast<int>(codepoint), scale, scale, &x0, &y0, &x1, &y1);
+        glyph.width = std::max(0, x1 - x0);
+        glyph.height = std::max(0, y1 - y0);
+        glyph.xOffset = x0;
+        glyph.yOffset = y0;
+
+        if (glyph.width > 0 && glyph.height > 0) {
+            std::vector<unsigned char> alpha(static_cast<size_t>(glyph.width) * glyph.height, 0);
+            stbtt_MakeCodepointBitmap(&gFontInfo, alpha.data(), glyph.width, glyph.height, glyph.width, scale, scale, static_cast<int>(codepoint));
+
+            std::vector<Uint32> argb(alpha.size());
+            for (size_t index = 0; index < alpha.size(); index++) {
+                argb[index] = (static_cast<Uint32>(alpha[index]) << 24) | 0x00FFFFFF;
+            }
+
+            glyph.texture = SDL_CreateTexture(gRenderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STATIC, glyph.width, glyph.height);
+            if (glyph.texture != nullptr) {
+                SDL_UpdateTexture(glyph.texture, nullptr, argb.data(), glyph.width * 4);
+                SDL_SetTextureBlendMode(glyph.texture, SDL_BLENDMODE_BLEND);
+            }
+        }
+
+        return &(gDynamicGlyphs.emplace(key, glyph).first->second);
     }
 
     FontAtlas* atlasForSize(float size)
@@ -381,6 +466,14 @@ void muiDrawReset()
         }
     }
     gAtlases.clear();
+
+    for (auto& entry : gDynamicGlyphs) {
+        if (entry.second.texture != nullptr) {
+            SDL_DestroyTexture(entry.second.texture);
+        }
+    }
+    gDynamicGlyphs.clear();
+
     muiIconsReset();
     muiGameSkinReset();
     gRenderer = nullptr;
@@ -577,15 +670,9 @@ void muiPopClip()
 
 std::u32string muiDecodeGameText(const char* text)
 {
-    std::u32string result;
-    if (text == nullptr) {
-        return result;
-    }
-
-    for (const unsigned char* ch = reinterpret_cast<const unsigned char*>(text); *ch != '\0'; ch++) {
-        result.push_back(gameCharsetDecode(*ch));
-    }
-    return result;
+    // CE/CHS: GBK/UTF-8 text must be decoded as a whole; one byte at a time
+    // would turn every Chinese character into two replacement glyphs.
+    return gameCharsetDecodeString(text);
 }
 
 float muiFitTextSize(const std::u32string& text, float width, float size, float minSize)
@@ -598,15 +685,9 @@ float muiFitTextSize(const std::u32string& text, float width, float size, float 
 
 std::string muiEncodeGameText(const std::u32string& text)
 {
-    std::string result;
-    for (char32_t codepoint : text) {
-        // Not in the game's charset: left out.
-        unsigned char ch = gameCharsetEncode(codepoint);
-        if (ch != 0) {
-            result.push_back(static_cast<char>(ch));
-        }
-    }
-    return result;
+    // CE/CHS: handles multi-byte GBK/UTF-8 output as well as single-byte
+    // code pages (characters the charset cannot represent are left out).
+    return gameCharsetEncodeString(text);
 }
 
 std::u32string muiDecodeUtf8(const char* text)
@@ -644,7 +725,7 @@ std::u32string muiDecodeUtf8(const char* text)
 
 float muiLineHeight(float size)
 {
-    if (muiSkinFallout()) {
+    if (!useTtfText()) {
         return muiGameLineHeight(size);
     }
     FontAtlas* atlas = atlasForSize(size);
@@ -659,12 +740,14 @@ bool muiFontHasGlyph(char32_t codepoint)
             return true;
         }
     }
-    return false;
+    // CE/CHS: outside the packed Latin ranges, glyphs are rasterized on
+    // demand from the Chinese TTF.
+    return chsFontsActive() && codepoint >= 0x80;
 }
 
 float muiTextWidth(const std::u32string& text, float size)
 {
-    if (muiSkinFallout()) {
+    if (!useTtfText()) {
         return muiGameTextWidth(text, size);
     }
     FontAtlas* atlas = atlasForSize(size);
@@ -672,14 +755,24 @@ float muiTextWidth(const std::u32string& text, float size)
         return 0.0f;
     }
 
+    int pixelSize = std::max(static_cast<int>(std::lround(size)), 6);
     float width = 0.0f;
     for (char32_t codepoint : text) {
         int rangeIndex;
         int charIndex;
         const stbtt_packedchar* glyph = findGlyph(atlas, codepoint, &rangeIndex, &charIndex);
-        if (glyph == nullptr) {
-            glyph = findGlyph(atlas, U'?', &rangeIndex, &charIndex);
+        if (glyph != nullptr) {
+            width += glyph->xadvance;
+            continue;
         }
+
+        DynamicGlyph* dynamic = chsFontsActive() ? dynamicGlyphFor(codepoint, pixelSize) : nullptr;
+        if (dynamic != nullptr) {
+            width += dynamic->advance;
+            continue;
+        }
+
+        glyph = findGlyph(atlas, U'?', &rangeIndex, &charIndex);
         if (glyph != nullptr) {
             width += glyph->xadvance;
         }
@@ -689,7 +782,7 @@ float muiTextWidth(const std::u32string& text, float size)
 
 void muiDrawText(const std::u32string& text, float x, float y, float size, MuiColor color)
 {
-    if (muiSkinFallout()) {
+    if (!useTtfText()) {
         muiGameDrawText(text, x, y, size, color);
         return;
     }
@@ -700,6 +793,14 @@ void muiDrawText(const std::u32string& text, float x, float y, float size, MuiCo
 
     gVertices.clear();
 
+    struct PendingGlyph {
+        SDL_Texture* texture;
+        SDL_Rect destination;
+    };
+    std::vector<PendingGlyph> pending;
+
+    int pixelSize = std::max(static_cast<int>(std::lround(size)), 6);
+
     // Snap baseline to pixels for crisp text.
     float penX = std::round(x);
     float penY = std::round(y + atlas->ascent);
@@ -708,6 +809,21 @@ void muiDrawText(const std::u32string& text, float x, float y, float size, MuiCo
         int charIndex;
         const stbtt_packedchar* glyph = findGlyph(atlas, codepoint, &rangeIndex, &charIndex);
         if (glyph == nullptr) {
+            DynamicGlyph* dynamic = chsFontsActive() ? dynamicGlyphFor(codepoint, pixelSize) : nullptr;
+            if (dynamic != nullptr) {
+                if (dynamic->texture != nullptr) {
+                    SDL_Rect destination = {
+                        static_cast<int>(std::round(penX + dynamic->xOffset)),
+                        static_cast<int>(std::round(penY + dynamic->yOffset)),
+                        dynamic->width,
+                        dynamic->height,
+                    };
+                    pending.push_back({ dynamic->texture, destination });
+                }
+                penX += dynamic->advance;
+                continue;
+            }
+
             glyph = findGlyph(atlas, U'?', &rangeIndex, &charIndex);
             if (glyph == nullptr) {
                 continue;
@@ -725,7 +841,17 @@ void muiDrawText(const std::u32string& text, float x, float y, float size, MuiCo
         gVertices.push_back(vertex(quad.x0, quad.y1, color, quad.s0, quad.t1));
     }
 
-    SDL_RenderGeometry(gRenderer, atlas->texture, gVertices.data(), static_cast<int>(gVertices.size()), nullptr, 0);
+    if (!gVertices.empty()) {
+        SDL_RenderGeometry(gRenderer, atlas->texture, gVertices.data(), static_cast<int>(gVertices.size()), nullptr, 0);
+    }
+
+    // Dynamic CJK glyphs each have their own texture, so they are drawn after
+    // the packed batch with the requested tint.
+    for (const PendingGlyph& entry : pending) {
+        SDL_SetTextureColorMod(entry.texture, color.r, color.g, color.b);
+        SDL_SetTextureAlphaMod(entry.texture, color.a);
+        SDL_RenderCopy(gRenderer, entry.texture, nullptr, &(entry.destination));
+    }
 }
 
 void muiDrawTextAligned(const std::u32string& text, const MuiRect& rect, float size, MuiColor color, MuiAlign horizontal, MuiAlign vertical)
@@ -1098,6 +1224,26 @@ std::vector<std::u32string> muiWrapText(const std::u32string& text, float width,
     while (start <= text.size()) {
         size_t end = text.find(U'\n', start);
         std::u32string paragraph = text.substr(start, end == std::u32string::npos ? std::u32string::npos : end - start);
+
+        // CE/CHS: Chinese text has no spaces, so the word-based splitter
+        // below would produce one giant overflowing "word". Wrap per
+        // character instead, inserting a space only where the source has one.
+        if (chsFontsActive()) {
+            std::u32string line;
+            for (char32_t codepoint : paragraph) {
+                if (!line.empty() && muiTextWidth(line + codepoint, size) > width) {
+                    lines.push_back(line);
+                    line.clear();
+                }
+                line.push_back(codepoint);
+            }
+            lines.push_back(line);
+            if (end == std::u32string::npos) {
+                break;
+            }
+            start = end + 1;
+            continue;
+        }
 
         std::u32string line;
         size_t position = 0;

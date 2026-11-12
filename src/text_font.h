@@ -18,6 +18,11 @@ typedef int FontManagerGetLetterSpacingProc();
 typedef int FontManagerGetBufferSizeProc(const char* string);
 typedef int FontManagerGetMonospacedCharacterWidth();
 
+// CE/CHS: a font manager may provide its own word wrapping. The stock
+// implementation walks single bytes, which splits GBK/UTF-8 multi-byte
+// characters in half. nullptr keeps the legacy byte-based algorithm.
+typedef int FontManagerWordWrapProc(const char* string, int width, short* breakpoints, short* breakpointsLengthPtr);
+
 typedef struct FontManager {
     int minFont;
     int maxFont;
@@ -30,6 +35,7 @@ typedef struct FontManager {
     FontManagerGetLetterSpacingProc* getLetterSpacingProc;
     FontManagerGetBufferSizeProc* getBufferSizeProc;
     FontManagerGetMonospacedCharacterWidth* getMonospacedCharacterWidthProc;
+    FontManagerWordWrapProc* wordWrapProc;
 } FontManager;
 
 extern FontManager gTextFontManager;
@@ -43,6 +49,8 @@ extern FontManagerGetMonospacedStringWidthProc* fontGetMonospacedStringWidth;
 extern FontManagerGetLetterSpacingProc* fontGetLetterSpacing;
 extern FontManagerGetBufferSizeProc* fontGetBufferSize;
 extern FontManagerGetMonospacedCharacterWidth* fontGetMonospacedCharacterWidth;
+// CE/CHS: installed by the currently selected font manager, or nullptr.
+extern FontManagerWordWrapProc* fontWordWrap;
 
 inline void fontDrawText(unsigned char* buffer, const char* string, int length, int pitch, ColorWithFlags color)
 {

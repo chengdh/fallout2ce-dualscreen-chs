@@ -97,6 +97,9 @@ FontManagerGetBufferSizeProc* fontGetBufferSize = nullptr;
 // 0x51E3D4 text_max
 FontManagerGetMonospacedCharacterWidth* fontGetMonospacedCharacterWidth = nullptr;
 
+// CE/CHS: the active font manager's word-wrap implementation (may be null).
+FontManagerWordWrapProc* fontWordWrap = nullptr;
+
 // 0x6ADB08 font
 static TextFontDescriptor gTextFontDescriptors[TEXT_FONT_MAX];
 
@@ -297,6 +300,7 @@ void fontSetCurrent(int font)
         fontGetLetterSpacing = fontManager->getLetterSpacingProc;
         fontGetBufferSize = fontManager->getBufferSizeProc;
         fontGetMonospacedCharacterWidth = fontManager->getMonospacedCharacterWidthProc;
+        fontWordWrap = fontManager->wordWrapProc;
 
         gCurrentFont = font;
 

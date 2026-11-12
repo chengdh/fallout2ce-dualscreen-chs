@@ -87,6 +87,10 @@ set(FALLOUT_ENGINE_SOURCES
     "src/character_editor.h"
     "src/character_selector.cc"
     "src/character_selector.h"
+    # CE/CHS: Chinese (GBK/UTF-8) TrueType font support.
+    "src/chs_font_manager.cc"
+    "src/chs_font_manager.h"
+    "src/chs_gbk_table.h"
     "src/color.cc"
     "src/color.h"
     "src/combat_ai_defs.h"

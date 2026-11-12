@@ -12,6 +12,7 @@
 #include "actions.h"
 #include "animation.h"
 #include "art.h"
+#include "chs_font_manager.h"
 #include "color.h"
 #include "combat.h"
 #include "combat_ai.h"
@@ -3622,6 +3623,51 @@ static int gameDialogDrawText(unsigned char* buffer, Rect* rect, const char* str
     }
 
     int maxWidth = rect->right - rect->left;
+
+    // CE/CHS: port of the GBK line builder from fallout1-ce-chs. The stock
+    // algorithm cuts at spaces and writes '\0' into the source string;
+    // Chinese text has no spaces and a cut can land in the middle of a
+    // double-byte character. Build each line in a scratch buffer instead and
+    // track an absolute byte offset so multi-page dialogue still works.
+    if (chsFontsActive()) {
+        char line[1024];
+        while (start != nullptr && *start != '\0') {
+            size_t consumed = chsBuildLine(start, maxWidth, line, sizeof(line));
+            if (consumed == 0) {
+                break;
+            }
+
+            bool isFirstLine = start == mutableText;
+            if (draw != 0 && line[0] != '\0') {
+                if (rect->bottom - fontGetLineHeight() < rect->top) {
+                    if (textOffset != nullptr) {
+                        *textOffset = static_cast<int>(start - mutableText);
+                    }
+                    return rect->top;
+                }
+
+                unsigned char* dest = (draw != 1 || isFirstLine) ? buffer + 10 : buffer;
+                fontDrawText(dest + pitch * rect->top, line, maxWidth, pitch, color);
+            }
+
+            start += consumed;
+            rect->top += height;
+
+            if (textOffset != nullptr && *start != '\0') {
+                *textOffset = static_cast<int>(start - mutableText);
+            }
+
+            if (rect->top >= rect->bottom && *start != '\0') {
+                return rect->top;
+            }
+        }
+
+        if (textOffset != nullptr && (start == nullptr || *start == '\0')) {
+            *textOffset = 0;
+        }
+        return rect->top;
+    }
+
     char* end = nullptr;
     while (start != nullptr && *start != '\0') {
         if (fontGetStringWidth(start) > maxWidth) {

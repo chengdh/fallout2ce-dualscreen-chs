@@ -1,6 +1,8 @@
 #ifndef FALLOUT_GAME_CHARSET_H_
 #define FALLOUT_GAME_CHARSET_H_
 
+#include <string>
+
 namespace fallout {
 
 // CE: Which characters the game's texts mean. The game has no encoding: a
@@ -20,10 +22,19 @@ namespace fallout {
 // After the game's fonts are loaded.
 void gameCharsetInit();
 
+// True for multi-byte encodings (GBK / UTF-8 Chinese fonts), where the
+// single-byte helpers below cannot be used.
+bool gameCharsetIsMultibyte();
+
 // Unicode of a game text's byte.
 char32_t gameCharsetDecode(unsigned char ch);
 // The game text's byte of [codepoint], 0 - it has none.
 unsigned char gameCharsetEncode(char32_t codepoint);
+
+// Whole-string conversions. These are the correct entry points for the
+// mobile UI, since they handle multi-byte Chinese text.
+std::u32string gameCharsetDecodeString(const char* text);
+std::string gameCharsetEncodeString(const std::u32string& text);
 
 // The code page's Windows name ("windows-1251").
 const char* gameCharsetName();

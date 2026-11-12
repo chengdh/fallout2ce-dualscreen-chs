@@ -6,6 +6,7 @@
 #include <string>
 
 #include "art.h"
+#include "chs_font_manager.h"
 #include "color.h"
 #include "combat.h"
 #include "draw.h"
@@ -271,6 +272,44 @@ void displayMonitorAddMessage(const char* str)
 
     std::string mutableMessage(str);
     char* mutableStr = mutableMessage.data();
+
+    // CE/CHS: the stock splitter looks for the last ASCII space and writes
+    // '\0' into the message. Chinese messages have no spaces and a cut would
+    // split a GBK pair, so build each line from whole characters instead.
+    if (chsFontsActive()) {
+        const char* remaining = str;
+        char line[DISPLAY_MONITOR_LINE_LENGTH];
+        int currentKnobWidth = knobWidth;
+
+        while (*remaining != '\0') {
+            int available = DISPLAY_MONITOR_WIDTH - _max_disp - currentKnobWidth;
+            if (available <= 0) {
+                break;
+            }
+
+            size_t consumed = chsBuildLine(remaining, available, line, sizeof(line) - 2);
+            if (consumed == 0) {
+                break;
+            }
+
+            char* out = gDisplayMonitorLines[_disp_start];
+            if (knob != '\0') {
+                *out++ = knob;
+                knob = '\0';
+                currentKnobWidth = 0;
+            }
+            strncpy(out, line, sizeof(line) - 2);
+            gDisplayMonitorLines[_disp_start][DISPLAY_MONITOR_LINE_LENGTH - 1] = '\0';
+            _disp_start = (_disp_start + 1) % gDisplayMonitorLinesCapacity;
+
+            remaining += consumed;
+        }
+
+        fontSetCurrent(oldFont);
+        _disp_curr = _disp_start;
+        displayMonitorRefresh();
+        return;
+    }
 
     // TODO: Refactor these two loops.
     char* splitPos = nullptr;

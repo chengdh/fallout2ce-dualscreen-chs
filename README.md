@@ -82,6 +82,23 @@ Tested on a Redmi 15C (Android 16); the dual-screen companion is made for the AY
 
 **Recommended setup: Fallout 2 + [Restoration Project (RPU)](https://github.com/BGforgeNet/Fallout2_Restoration_Project) 2.4.34.** The port is played and tested with it. RPU relies on sfall, which this engine reimplements: Fallout 2: Community Engine, the continuation of the original Fallout 2 Community Edition. Install RPU into the game folder on a computer, then copy the folder to the phone.
 
+## Chinese (中文) support
+
+The engine now ships the Chinese text support from [fallout1-ce-chs](https://github.com/yurikaka/fallout1-ce-chs), adapted to this fork's font manager and touch UI:
+
+- GBK (or UTF-8) decoding without libiconv, using the `stb_truetype` copy already vendored in the repo — so it works with the Android NDK and needs no network at build time.
+- A TrueType font manager for fonts 100–110, configured by `fonts/chs/font.ini`.
+- CJK-aware word wrap everywhere (dialogue options, Pip-Boy, save/load, floating text), plus GBK-safe line breaking in dialogue pages, the bottom-left message monitor and the bottom-screen companion. No more split characters or missing second pages.
+- The bottom-screen UI decodes game text with the same charset and rasterizes Chinese glyphs on demand from the same TTF.
+
+It is **opt-in and data-driven**: no font pack means the stock AAF fonts and behaviour are untouched. To enable it:
+
+1. Copy [`extras/chs/font.ini`](extras/chs/font.ini) to `<your game data>/fonts/chs/font.ini`.
+2. Put a Chinese TrueType font (`.ttf`/`.ttc` with TrueType outlines — `simhei.ttf`, `simsun.ttc`, `msyh.ttc`, Source Han Sans, …) in the same folder as `chs.ttf`, or edit `fileName` in the ini (absolute paths work too).
+3. Put your Chinese translation's `text/` folder in the game data dir and set `[system] language=chinese` in `fallout2.cfg`, then restart.
+
+Line density in the inventory / character sheet / save slots is controlled by `lineSpacing` and `heightOffset` in `font.ini` instead of the hard-coded pixel constants used by the original fork. Fonts are not bundled: you must supply your own licensed font, just like the game data.
+
 ## Known limitations
 
 - Landscape only; portrait is planned.
