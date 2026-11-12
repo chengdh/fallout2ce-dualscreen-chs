@@ -1232,8 +1232,20 @@ std::vector<std::u32string> muiWrapText(const std::u32string& text, float width,
             std::u32string line;
             for (char32_t codepoint : paragraph) {
                 if (!line.empty() && muiTextWidth(line + codepoint, size) > width) {
-                    lines.push_back(line);
-                    line.clear();
+                    // Kinsoku: closing punctuation may not start a line and an
+                    // opening bracket may not end one - in both cases the last
+                    // character of the line comes down with it.
+                    if (chsIsNoStartChar(codepoint) || chsIsNoEndChar(line.back())) {
+                        char32_t carried = line.back();
+                        line.pop_back();
+                        if (!line.empty()) {
+                            lines.push_back(line);
+                        }
+                        line.assign(1, carried);
+                    } else {
+                        lines.push_back(line);
+                        line.clear();
+                    }
                 }
                 line.push_back(codepoint);
             }

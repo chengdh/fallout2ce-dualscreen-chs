@@ -61,6 +61,15 @@ size_t chsBuildLine(const char* text, int maxWidth, char* out, size_t outSize);
 // CJK-aware replacement for wordWrap(), installed into gChsFontManager.
 int chsWordWrap(const char* string, int width, short* breakpoints, short* breakpointsLengthPtr);
 
+// Kinsoku helpers, exported for renderers that do their own line breaking
+// (the mobile UI wraps text on std::u32string before measuring it).
+//
+// `chsIsNoStartChar` is true for closing punctuation that may not begin a
+// line (，。！？：；」』）, `chsIsNoEndChar` for opening brackets that may not
+// end one (（「『《【).
+bool chsIsNoStartChar(char32_t codepoint);
+bool chsIsNoEndChar(char32_t codepoint);
+
 // --- Font data sharing ----------------------------------------------------
 
 // Raw TTF/TTC bytes of the primary Chinese font, for the bottom-screen UI

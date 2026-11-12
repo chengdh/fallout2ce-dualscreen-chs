@@ -34,6 +34,17 @@ namespace {
     constexpr char kChsConfigPath[] = "fonts\\chs\\font.ini";
     constexpr char kChsFontDir[] = "fonts\\chs\\";
 
+    // Most Chinese distributions of Fallout 2 CE (yahooboby's pack, which is
+    // what Chinese players usually drop into the game folder) keep font.ini
+    // and the TTFs directly in fonts\ instead of fonts\chs\. Accept both
+    // layouts, so an existing installation works without moving files around.
+    constexpr char kChsLegacyConfigPath[] = "fonts\\font.ini";
+    constexpr char kChsLegacyFontDir[] = "fonts\\";
+
+    // Directory of the pack that was actually loaded. Empty until a config is
+    // read; used to resolve relative fileName entries.
+    char gChsActiveFontDir[COMPAT_MAX_PATH] = "";
+
     // 0x95 is the original engine's "conversation knob" glyph. It is inserted
     // in front of dialogue options and display-monitor messages. GBK also uses
     // 0x95 as a (very rare) lead byte, so only treat it as the knob when the
@@ -251,16 +262,29 @@ namespace {
     {
         char path[COMPAT_MAX_PATH];
 
+        // Try the directory of the pack that was loaded first, then the other
+        // known layout, so a config placed in fonts\chs\ can still reference
+        // fonts that live in fonts\ and vice versa.
+        const char* directories[3];
+        int directoryCount = 0;
         if (fileName[0] == '/' || fileName[0] == '\\' || (fileName[0] != '\0' && fileName[1] == ':')) {
-            snprintf(path, sizeof(path), "%s", fileName);
+            directories[directoryCount++] = "";
         } else {
-            snprintf(path, sizeof(path), "%s%s", kChsFontDir, fileName);
+            directories[directoryCount++] = gChsActiveFontDir[0] != '\0' ? gChsActiveFontDir : kChsFontDir;
+            directories[directoryCount++] = kChsFontDir;
+            directories[directoryCount++] = kChsLegacyFontDir;
         }
 
         // fileOpen() goes through the VFS (master.dat / critter.dat / data dir
         // / ce.dat), so a font dropped next to the game files just works.
-        File* stream = fileOpen(path, "rb");
+        File* stream = nullptr;
+        for (int index = 0; index < directoryCount && stream == nullptr; index++) {
+            snprintf(path, sizeof(path), "%s%s", directories[index], fileName);
+            stream = fileOpen(path, "rb");
+        }
+
         if (stream == nullptr) {
+            snprintf(path, sizeof(path), "%s%s", kChsFontDir, fileName);
             debugPrint("CHS: cannot open font %s\n", path);
             return false;
         }
@@ -691,9 +715,22 @@ int chsFontsInit()
         return -1;
     }
 
-    if (!configRead(&config, kChsConfigPath, true)) {
+    gChsActiveFontDir[0] = '\0';
+
+    if (configRead(&config, kChsConfigPath, true)) {
+        snprintf(gChsActiveFontDir, sizeof(gChsActiveFontDir), "%s", kChsFontDir);
+    } else {
+        // Retry from a clean state with the flat fonts\ layout.
         configFree(&config);
-        return -1; // No Chinese font pack installed - stock behaviour.
+        if (!configInit(&config)) {
+            return -1;
+        }
+        if (configRead(&config, kChsLegacyConfigPath, true)) {
+            snprintf(gChsActiveFontDir, sizeof(gChsActiveFontDir), "%s", kChsLegacyFontDir);
+        } else {
+            configFree(&config);
+            return -1; // No Chinese font pack installed - stock behaviour.
+        }
     }
 
     int firstFont = -1;
@@ -736,8 +773,9 @@ int chsFontsInit()
     }
 
     gChsActive = true;
-    debugPrint("CHS: Chinese TrueType fonts enabled (encoding %s)\n",
-        gChsEncoding == ChsEncoding::Utf8 ? "UTF-8" : "GBK");
+    debugPrint("CHS: Chinese TrueType fonts enabled (encoding %s, dir %s)\n",
+        gChsEncoding == ChsEncoding::Utf8 ? "UTF-8" : "GBK",
+        gChsActiveFontDir);
     return 0;
 }
 
@@ -980,6 +1018,16 @@ int chsWordWrap(const char* string, int width, short* breakpoints, short* breakp
     breakpoints[*breakpointsLengthPtr] = static_cast<short>(length);
     *breakpointsLengthPtr += 1;
     return 0;
+}
+
+bool chsIsNoStartChar(char32_t codepoint)
+{
+    return isNoStartChar(codepoint);
+}
+
+bool chsIsNoEndChar(char32_t codepoint)
+{
+    return isNoEndChar(codepoint);
 }
 
 const unsigned char* chsFontData(int* size)
