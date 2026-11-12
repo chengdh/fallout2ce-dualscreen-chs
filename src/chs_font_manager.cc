@@ -532,10 +532,145 @@ namespace {
         _freeColorBlendTable(paletteIndex);
     }
 
+    // --- Kinsoku (禁则) ---------------------------------------------------
+    //
+    // Two typographic rules make or break Chinese line breaking:
+    //   * 行首禁则 - a closing punctuation mark may not start a line.
+    //   * 行尾禁则 - an opening bracket may not end a line.
+    // Without them you get a lone "，" dangling at the left margin, which is
+    // the single most obvious "this was translated by a script" tell.
+
+    bool isNoStartChar(char32_t cp)
+    {
+        switch (cp) {
+        // Full-width closing punctuation.
+        case 0x3001: // 、
+        case 0x3002: // 。
+        case 0x3009: // 〉
+        case 0x300B: // 》
+        case 0x300D: // 」
+        case 0x300F: // 』
+        case 0x3011: // 】
+        case 0x3015: // 〕
+        case 0x3017: // 〗
+        case 0xFF01: // ！
+        case 0xFF09: // ）
+        case 0xFF0C: // ，
+        case 0xFF0E: // ．
+        case 0xFF1A: // ：
+        case 0xFF1B: // ；
+        case 0xFF1F: // ？
+        case 0xFF3D: // ］
+        case 0xFF5D: // ｝
+        case 0xFF05: // ％
+        case 0x2019: // ’
+        case 0x201D: // ”
+        case 0x00B7: // ·
+        case 0x2026: // …
+        case 0x2014: // —
+        case 0xFF5E: // ～
+            return true;
+        // The same marks in ASCII, for mixed text.
+        case U',':
+        case U'.':
+        case U'!':
+        case U'?':
+        case U':':
+        case U';':
+        case U')':
+        case U']':
+        case U'}':
+        case U'%':
+        case U'\'':
+        case U'"':
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    bool isNoEndChar(char32_t cp)
+    {
+        switch (cp) {
+        case 0x3008: // 〈
+        case 0x300A: // 《
+        case 0x300C: // 「
+        case 0x300E: // 『
+        case 0x3010: // 【
+        case 0x3014: // 〔
+        case 0x3016: // 〖
+        case 0xFF08: // （
+        case 0xFF3B: // ［
+        case 0xFF5B: // ｛
+        case 0x2018: // ‘
+        case 0x201C: // “
+        case U'(':
+        case U'[':
+        case U'{':
+            return true;
+        default:
+            return false;
+        }
+    }
+
+    // Start offset of the character that ends right before [offset]. Walks
+    // forward from [lineStart] because GBK cannot be scanned backwards.
+    int charStartBefore(const char* text, int lineStart, int offset)
+    {
+        int lastStart = lineStart;
+        int scan = lineStart;
+        while (scan < offset) {
+            char32_t cp;
+            int length = decodeNext(text + scan, &cp);
+            if (length <= 0) {
+                break;
+            }
+            lastStart = scan;
+            scan += length;
+        }
+        return lastStart;
+    }
+
+    // Nudges a line break so it does not violate the rules above. Returns a
+    // position within (lineStart, breakAt].
+    int kinsokuAdjust(const char* text, int lineStart, int breakAt)
+    {
+        int guard = 4;
+        while (breakAt > lineStart && guard-- > 0) {
+            char32_t next = 0;
+            int nextLength = decodeNext(text + breakAt, &next);
+
+            int lastStart = charStartBefore(text, lineStart, breakAt);
+            char32_t last = 0;
+            decodeNext(text + lastStart, &last);
+
+            bool badNext = nextLength > 0 && isNoStartChar(next);
+            bool badLast = lastStart < breakAt && isNoEndChar(last);
+
+            if (!badNext && !badLast) {
+                break;
+            }
+
+            // Either pull the preceding character down so the punctuation is
+            // no longer first on the next line, or pull a dangling opening
+            // bracket down. Both are "break one character earlier".
+            if (lastStart <= lineStart) {
+                break;
+            }
+            breakAt = lastStart;
+        }
+        return breakAt;
+    }
+
     bool isBreakOpportunity(char32_t cp, int charLength)
     {
         if (cp == U' ' || cp == U'-' || cp == U'\t') {
             return true;
+        }
+        // Breaking right after an opening bracket would leave it dangling at
+        // the end of the line.
+        if (isNoEndChar(cp)) {
+            return false;
         }
         // CJK ideographs, kana, hangul and full-width punctuation can be
         // broken after any character. Latin runs are kept together.
@@ -704,6 +839,11 @@ size_t chsBuildLine(const char* text, int maxWidth, char* out, size_t outSize)
     out[0] = '\0';
     size_t used = 0;
     const char* p = text;
+    // Start of the character currently at the end of `out`, and where that
+    // character begins inside `out`. Needed to undo one character for kinsoku.
+    const char* prevCharSrc = text;
+    size_t prevCharOut = 0;
+    bool havePrev = false;
 
     while (*p != '\0') {
         char32_t cp;
@@ -715,23 +855,51 @@ size_t chsBuildLine(const char* text, int maxWidth, char* out, size_t outSize)
             break;
         }
 
+        size_t outStart = used;
+        const char* srcStart = p;
+
         memcpy(out + used, p, static_cast<size_t>(charLength));
         used += static_cast<size_t>(charLength);
         out[used] = '\0';
 
         if (maxWidth > 0 && fontGetStringWidth(out) > maxWidth) {
-            used -= static_cast<size_t>(charLength);
+            // This character does not fit. By default it starts the next line.
+            used = outStart;
             out[used] = '\0';
+
+            if (isNoStartChar(cp) && havePrev) {
+                // ...but a closing mark may not start a line, so the previous
+                // character comes down with it.
+                used = prevCharOut;
+                out[used] = '\0';
+            }
+
             if (used == 0) {
                 // A single character wider than the available space: keep it
                 // anyway so the caller always makes progress.
-                memcpy(out, p, static_cast<size_t>(charLength));
-                used = static_cast<size_t>(charLength);
+                const char* restart = p;
+                if (isNoStartChar(cp) && havePrev) {
+                    restart = prevCharSrc;
+                }
+                char32_t restartCp;
+                int restartLength = decodeNext(restart, &restartCp);
+                if (restartLength <= 0) {
+                    restartLength = charLength;
+                }
+                memcpy(out, restart, static_cast<size_t>(restartLength));
+                used = static_cast<size_t>(restartLength);
                 out[used] = '\0';
-                p += charLength;
+                p = restart + restartLength;
+            } else if (isNoStartChar(cp) && havePrev) {
+                // Resume from the character we just moved down.
+                p = prevCharSrc;
             }
             break;
         }
+
+        prevCharSrc = srcStart;
+        prevCharOut = outStart;
+        havePrev = true;
         p += charLength;
     }
 
@@ -772,16 +940,21 @@ int chsWordWrap(const char* string, int width, short* breakpoints, short* breakp
 
         int advance = characterAdvance(cp);
         int previousPosition = position;
+        int lineStart = breakpoints[*breakpointsLengthPtr - 1];
 
         if (accum + advance > width) {
             if (*breakpointsLengthPtr == WORD_WRAP_MAX_COUNT) {
                 return -1;
             }
 
-            int breakAt = lastBreak > breakpoints[*breakpointsLengthPtr - 1] ? lastBreak : previousPosition;
-            if (breakAt <= breakpoints[*breakpointsLengthPtr - 1]) {
+            int breakAt = lastBreak > lineStart ? lastBreak : previousPosition;
+            if (breakAt <= lineStart) {
                 // Nothing fits on this line: consume one whole character.
                 breakAt = previousPosition + charLength;
+            } else {
+                // Keep closing punctuation off the left margin and opening
+                // brackets off the right one.
+                breakAt = kinsokuAdjust(string, lineStart, breakAt);
             }
 
             breakpoints[*breakpointsLengthPtr] = static_cast<short>(breakAt);

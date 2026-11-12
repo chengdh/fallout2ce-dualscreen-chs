@@ -89,6 +89,7 @@ The engine now ships the Chinese text support from [fallout1-ce-chs](https://git
 - GBK (or UTF-8) decoding without libiconv, using the `stb_truetype` copy already vendored in the repo — so it works with the Android NDK and needs no network at build time.
 - A TrueType font manager for fonts 100–110, configured by `fonts/chs/font.ini`.
 - CJK-aware word wrap everywhere (dialogue options, Pip-Boy, save/load, floating text), plus GBK-safe line breaking in dialogue pages, the bottom-left message monitor and the bottom-screen companion. No more split characters or missing second pages.
+- Kinsoku (禁则): closing marks such as `，。」` never start a line and opening brackets such as `（《「` never end one, so punctuation does not dangle at the margin.
 - The bottom-screen UI decodes game text with the same charset and rasterizes Chinese glyphs on demand from the same TTF.
 
 It is **opt-in and data-driven**: no font pack means the stock AAF fonts and behaviour are untouched. To enable it:
